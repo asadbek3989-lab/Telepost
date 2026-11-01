@@ -9,14 +9,17 @@ export const env = {
   get botToken() {
     return process.env.BOT_TOKEN || process.env.TELEGRAM_BOT_TOKEN || '';
   },
-  get runwareKey() {
-    return process.env.RUNWARE_API_KEY || '';
+  get geminiKey() {
+    return process.env.GEMINI_API_KEY || '';
   },
   get textModel() {
-    return process.env.RUNWARE_TEXT_MODEL || 'google:gemini@3-flash';
+    return process.env.GEMINI_MODEL || 'gemini-3.8-flash';
+  },
+  get fallbackModel() {
+    return process.env.GEMINI_FALLBACK_MODEL || 'gemini-3.1-flash-lite';
   },
   get imageModel() {
-    return process.env.RUNWARE_IMAGE_MODEL || 'runware:400@1';
+    return process.env.GEMINI_IMAGE_MODEL || 'gemini-3.1-flash-lite-image';
   },
   get adminIds() {
     return list(process.env.ADMIN_IDS);

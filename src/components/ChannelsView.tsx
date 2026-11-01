@@ -281,7 +281,7 @@ export const ChannelsView: React.FC<Props> = ({ channels, session, onChanged, on
           <div className="space-y-2">
             <StatusRow ok={!!status.bot && !status.bot.error} label={`Bot${status.bot?.username ? ` @${status.bot.username}` : ''}`} hint={status.bot?.error} />
             <StatusRow ok={status.webhookOk} label="Webhook (bot buyruqlari, kanal avto-ulash, tasdiqlash tugmalari)" hint={status.webhookOk ? undefined : 'brauzerda /api/setup?key=CRON_SECRET ni oching'} />
-            <StatusRow ok={status.ai} label={`Runware AI (${status.textModel})`} hint={status.ai ? undefined : 'RUNWARE_API_KEY yo\'q'} />
+            <StatusRow ok={status.gemini} label={`Gemini AI (${status.textModel})`} hint={status.gemini ? undefined : 'GEMINI_API_KEY yo\'q'} />
             <StatusRow ok={status.db === 'upstash'} label={`Baza: ${status.db === 'upstash' ? 'Upstash Redis' : 'lokal fayl (faqat test uchun)'}`} />
             <StatusRow ok={cronOk} label="Cron (rejalashtirish va avtopilot)" hint={status.cronLast ? `oxirgi ishga tushish: ${timeAgo(status.cronLast)}` : 'hali ishlamagan — cron-job.org ni sozlang'} />
           </div>

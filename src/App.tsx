@@ -289,7 +289,7 @@ export default function App() {
         )}
       </main>
 
-      <footer className="border-t border-slate-800/80 bg-[#0a0f1d] py-3 text-center text-[11px] text-slate-500">TelePost AI • Runware & Telegram Bot API</footer>
+      <footer className="border-t border-slate-800/80 bg-[#0a0f1d] py-3 text-center text-[11px] text-slate-500">TelePost AI • Gemini & Telegram Bot API</footer>
     </div>
   );
 }

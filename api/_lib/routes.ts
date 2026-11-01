@@ -80,7 +80,7 @@ async function mustChannel(id: string | undefined): Promise<Channel> {
 add('GET', '/health', 'none', async () => ({
   success: true,
   bot: !!env.botToken,
-  ai: !!env.runwareKey,
+  gemini: !!env.geminiKey,
   db: dbConfigured(),
   admins: env.adminIds.length > 0,
   cron: !!env.cronSecret,
@@ -198,7 +198,7 @@ add('GET', '/status', 'admin', async () => {
     webhookOk: !!webhook?.url && webhook.url.endsWith('/api/telegram/webhook'),
     cronLast: await getMeta('cronLast'),
     db: getDb().kind,
-    ai: !!env.runwareKey,
+    gemini: !!env.geminiKey,
     cronSecret: !!env.cronSecret,
     textModel: env.textModel,
     imageModel: env.imageModel,
