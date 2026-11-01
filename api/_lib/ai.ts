@@ -41,20 +41,44 @@ function parseJson(raw: string): any {
   throw new HttpError(502, "AI javobini o'qib bo'lmadi, qayta urinib ko'ring");
 }
 
+function withTimeout<T>(p: Promise<T>, ms = 50_000): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const t = setTimeout(() => reject(new HttpError(504, "AI javobi juda sekin keldi (50 soniya). Qayta urinib ko'ring yoki mavzuni qisqartiring.")), ms);
+    p.then(
+      (v) => {
+        clearTimeout(t);
+        resolve(v);
+      },
+      (e) => {
+        clearTimeout(t);
+        reject(e);
+      }
+    );
+  });
+}
+
 async function askJson(prompt: string, opts: { search?: boolean; temperature?: number } = {}): Promise<any> {
   const temperature = opts.temperature ?? 0.9;
-  const run = (withSearch: boolean) =>
-    ai().models.generateContent({
-      model: env.textModel,
-      contents: prompt,
-      config: withSearch ? { tools: [{ googleSearch: {} }], temperature } : { responseMimeType: 'application/json', temperature },
-    });
+  const run = async (withSearch: boolean) => {
+    const base: Record<string, any> = withSearch ? { tools: [{ googleSearch: {} }], temperature } : { responseMimeType: 'application/json', temperature };
+    try {
+      // Tez javob uchun "o'ylash" darajasini pasaytiramiz
+      return await withTimeout(ai().models.generateContent({ model: env.textModel, contents: prompt, config: { ...base, thinkingConfig: { thinkingLevel: 'LOW' } } as any }), 40_000);
+    } catch (e: any) {
+      if (e instanceof HttpError && e.status === 504) {
+        // sekin bo'lsa, o'ylashsiz qayta urinamiz (qolgan vaqt ichida)
+        return await withTimeout(ai().models.generateContent({ model: env.textModel, contents: prompt, config: base as any }), 14_000);
+      }
+      // thinkingConfig qo'llab-quvvatlanmasa, usiz urinamiz
+      return await withTimeout(ai().models.generateContent({ model: env.textModel, contents: prompt, config: base as any }), 45_000);
+    }
+  };
   try {
     let res;
     try {
       res = await run(!!opts.search);
     } catch (e) {
-      if (!opts.search) throw e;
+      if (!opts.search || (e instanceof HttpError && e.status === 504)) throw e;
       res = await run(false);
     }
     return parseJson(res.text || '');
@@ -188,11 +212,14 @@ Faqat quyidagi JSON ni qaytar:
 export async function generateImage(prompt: string, aspectRatio = '1:1'): Promise<string> {
   const refined = `${prompt}. Professional high quality editorial illustration for a social media post, clean modern composition, balanced lighting, rich but harmonious colors. Absolutely no text, no letters, no logos, no watermarks.`;
   try {
-    const res = await ai().models.generateContent({
-      model: env.imageModel,
-      contents: { parts: [{ text: refined }] },
-      config: { imageConfig: { aspectRatio: aspectRatio as any } },
-    });
+    const res = await withTimeout(
+      ai().models.generateContent({
+        model: env.imageModel,
+        contents: { parts: [{ text: refined }] },
+        config: { imageConfig: { aspectRatio: aspectRatio as any } },
+      }),
+      52_000
+    );
     for (const part of res.candidates?.[0]?.content?.parts ?? []) {
       if (part.inlineData?.data) return `data:${part.inlineData.mimeType ?? 'image/png'};base64,${part.inlineData.data}`;
     }
