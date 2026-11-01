@@ -4,7 +4,7 @@ Bir nechta kanalni bitta botdan boshqarish: AI post + rasm, kontent reja, rejala
 
 ## Imkoniyatlar
 - **Ko'p kanal** — botni kanalga admin qilsangiz, kanal avtomatik ulanadi. Har kanal uchun alohida uslub, til, imzo, vaqt zonasi.
-- **AI post** (Gemini): kanal yo'nalishi va oldingi postlarni hisobga oladi, takrorlamaydi. Yangilik turi Google Search bilan.
+- **AI post** (Runware): kanal yo'nalishi va oldingi postlarni hisobga oladi, takrorlamaydi. Internet qidiruvi yo'q, model o'z bilimiga tayanadi.
 - **Kontent reja**: bir bosishda 3–14 kunlik g'oyalar → postlarni yozdirib → eng yaxshi vaqtlarga rejalashtirish.
 - **Avtopilot**: belgilangan vaqtlarda AI o'zi post yozadi; tasdiqlash tugmalari bot orqali keladi (✅ / 🗑).
 - AI tahrir tugmalari (ilgak, qisqartirish, tarjima…), rasm/fayl, havola tugmasi, qoralama, nusxa olish.
@@ -12,11 +12,11 @@ Bir nechta kanalni bitta botdan boshqarish: AI post + rasm, kontent reja, rejala
 
 ## Vercel'ga deploy (0 dan)
 1. **BotFather**: `/newbot` → token oling.
-2. **Gemini kalit**: aistudio.google.com → API key.
+2. **Runware kalit**: runware.ai → API Keys.
 3. Kodni GitHub'ga yuklang → Vercel'da **Add New Project** → shu repo (Framework: Vite avtomatik).
 4. Vercel → **Storage** → Marketplace → **Upstash Redis** qo'shing (env o'zi qo'shiladi).
 5. **Environment Variables** (`.env.example` ga qarang):
-   `BOT_TOKEN`, `GEMINI_API_KEY`, `ADMIN_IDS`, `CRON_SECRET` (+ ixtiyoriy `ADMIN_PASSWORD`).
+   `BOT_TOKEN`, `RUNWARE_API_KEY`, `ADMIN_IDS`, `CRON_SECRET` (+ ixtiyoriy `ADMIN_PASSWORD`).
    ADMIN_ID ni bilmasangiz: deploydan keyin botga `/id` yozing, ID ni qo'shib **Redeploy** qiling.
 6. Deploy tugagach brauzerda **bir marta** oching:
    `https://SIZNING-APP.vercel.app/api/setup?key=CRON_SECRET`
@@ -29,7 +29,7 @@ Bir nechta kanalni bitta botdan boshqarish: AI post + rasm, kontent reja, rejala
 ## Lokal ishga tushirish
 ```
 npm install
-cp .env.example .env   # BOT_TOKEN, GEMINI_API_KEY, ADMIN_PASSWORD yozing
+cp .env.example .env   # BOT_TOKEN, RUNWARE_API_KEY, ADMIN_PASSWORD yozing
 npm run dev            # http://localhost:3000 (brauzerda parol bilan kirasiz; baza .data/db.json)
 ```
 

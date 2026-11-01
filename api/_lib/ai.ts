@@ -1,26 +1,21 @@
-import { GoogleGenAI } from '@google/genai';
+import crypto from 'node:crypto';
 import { env } from './env.js';
 import { HttpError } from './http.js';
 import { sanitizeTelegramHtml } from '../../shared/telegramHtml.js';
 
-let client: GoogleGenAI | null = null;
-function ai(): GoogleGenAI {
-  if (!env.geminiKey) throw new HttpError(503, "GEMINI_API_KEY sozlanmagan (Vercel > Environment Variables).");
-  if (!client) client = new GoogleGenAI({ apiKey: env.geminiKey });
-  return client;
+const RUNWARE_URL = 'https://api.runware.ai/v1';
+
+function key(): string {
+  if (!env.runwareKey) throw new HttpError(503, "RUNWARE_API_KEY sozlanmagan (Vercel > Environment Variables).");
+  return env.runwareKey;
 }
 
 function wrapError(e: any): HttpError {
   if (e instanceof HttpError) return e;
   let msg = String(e?.message || e);
-  try {
-    const j = JSON.parse(msg);
-    msg = j?.error?.message || msg;
-  } catch {
-    /* oddiy matn */
-  }
-  if (/API key|API_KEY|permission|PERMISSION/i.test(msg)) msg = "Gemini API kaliti noto'g'ri yoki ruxsat yo'q";
-  if (/quota|RESOURCE_EXHAUSTED|429/i.test(msg)) msg = "Gemini limiti tugadi, birozdan keyin urinib ko'ring";
+  if (/401|403|unauthor|invalid.*(api)?.*key|forbidden/i.test(msg)) msg = "Runware API kaliti noto'g'ri yoki ruxsat yo'q";
+  else if (/429|rate.?limit|too many/i.test(msg)) msg = "Runware so'rov limiti oshdi, birozdan keyin urinib ko'ring";
+  else if (/402|insufficient|credit|balance|payment/i.test(msg)) msg = "Runware hisobida mablag' yetarli emas (balansni to'ldiring)";
   return new HttpError(502, `AI xatosi: ${msg.slice(0, 300)}`);
 }
 
@@ -41,47 +36,38 @@ function parseJson(raw: string): any {
   throw new HttpError(502, "AI javobini o'qib bo'lmadi, qayta urinib ko'ring");
 }
 
-function withTimeout<T>(p: Promise<T>, ms = 50_000): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const t = setTimeout(() => reject(new HttpError(504, "AI javobi juda sekin keldi (50 soniya). Qayta urinib ko'ring yoki mavzuni qisqartiring.")), ms);
-    p.then(
-      (v) => {
-        clearTimeout(t);
-        resolve(v);
-      },
-      (e) => {
-        clearTimeout(t);
-        reject(e);
-      }
-    );
-  });
-}
-
 async function askJson(prompt: string, opts: { search?: boolean; temperature?: number } = {}): Promise<any> {
+  // Eslatma: Runware'da Google Search yo'q, shuning uchun opts.search e'tiborsiz qoldiriladi.
   const temperature = opts.temperature ?? 0.9;
-  const run = async (withSearch: boolean) => {
-    const base: Record<string, any> = withSearch ? { tools: [{ googleSearch: {} }], temperature } : { responseMimeType: 'application/json', temperature };
-    try {
-      // Tez javob uchun "o'ylash" darajasini pasaytiramiz
-      return await withTimeout(ai().models.generateContent({ model: env.textModel, contents: prompt, config: { ...base, thinkingConfig: { thinkingLevel: 'LOW' } } as any }), 40_000);
-    } catch (e: any) {
-      if (e instanceof HttpError && e.status === 504) {
-        // sekin bo'lsa, o'ylashsiz qayta urinamiz (qolgan vaqt ichida)
-        return await withTimeout(ai().models.generateContent({ model: env.textModel, contents: prompt, config: base as any }), 14_000);
-      }
-      // thinkingConfig qo'llab-quvvatlanmasa, usiz urinamiz
-      return await withTimeout(ai().models.generateContent({ model: env.textModel, contents: prompt, config: base as any }), 45_000);
-    }
-  };
   try {
-    let res;
-    try {
-      res = await run(!!opts.search);
-    } catch (e) {
-      if (!opts.search || (e instanceof HttpError && e.status === 504)) throw e;
-      res = await run(false);
+    const res = await fetch(`${RUNWARE_URL}/chat/completions`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key()}` },
+      body: JSON.stringify({
+        model: env.textModel,
+        messages: [
+          { role: 'system', content: 'Faqat so\'ralgan JSON ni qaytar. Hech qanday izoh, kirish yoki markdown belgilarisiz.' },
+          { role: 'user', content: prompt },
+        ],
+        temperature,
+        max_completion_tokens: 8192,
+      }),
+    });
+    const raw = await res.text();
+    if (!res.ok) {
+      let m = raw;
+      try {
+        const j = JSON.parse(raw);
+        m = j?.error?.message || j?.errors?.[0]?.message || raw;
+      } catch {
+        /* oddiy matn */
+      }
+      throw new Error(`${res.status} ${m}`);
     }
-    return parseJson(res.text || '');
+    const j = JSON.parse(raw);
+    const content = j?.choices?.[0]?.message?.content;
+    const text = Array.isArray(content) ? content.map((c: any) => c?.text || '').join('') : String(content || '');
+    return parseJson(text);
   } catch (e) {
     throw wrapError(e);
   }
@@ -165,6 +151,7 @@ Post turi: ${p.templateType} — ${TEMPLATE[p.templateType] || TEMPLATE.custom}
 Ohang: ${TONE[p.tone] || TONE["do'stona"]}
 Til: ${LANG[p.language] || LANG['uz-lat']}
 ${p.recentTopics?.length ? `Yaqinda joylangan mavzular (TAKRORLAMA, boshqa burchakdan yoz): ${p.recentTopics.slice(0, 12).join(' | ')}` : ''}
+${p.useSearch ? "Diqqat: sen internetga ulanmagansan. Eng so'nggi voqea, sana va raqamlarni TO'QIMA; ishonching komil bo'lgan, umumiy va to'g'ri ma'lumot yoki tahlil yoz." : ''}
 ${p.wantFile ? `Postga ilova qilinadigan fayl ham kerak: "${p.fileRequest || p.topic}". Fayl nomi va to'liq foydali matnini tayyorla.` : ''}
 
 SIFAT TALABLARI:
@@ -209,24 +196,59 @@ Faqat quyidagi JSON ni qaytar:
   };
 }
 
+const IMAGE_SIZES: Record<string, [number, number]> = {
+  '1:1': [1024, 1024],
+  '16:9': [1280, 720],
+  '4:3': [1152, 864],
+  '3:4': [864, 1152],
+  '9:16': [720, 1280],
+};
+
 export async function generateImage(prompt: string, aspectRatio = '1:1'): Promise<string> {
   const refined = `${prompt}. Professional high quality editorial illustration for a social media post, clean modern composition, balanced lighting, rich but harmonious colors. Absolutely no text, no letters, no logos, no watermarks.`;
+  const [width, height] = IMAGE_SIZES[aspectRatio] || IMAGE_SIZES['1:1'];
   try {
-    const res = await withTimeout(
-      ai().models.generateContent({
-        model: env.imageModel,
-        contents: { parts: [{ text: refined }] },
-        config: { imageConfig: { aspectRatio: aspectRatio as any } },
-      }),
-      52_000
-    );
-    for (const part of res.candidates?.[0]?.content?.parts ?? []) {
-      if (part.inlineData?.data) return `data:${part.inlineData.mimeType ?? 'image/png'};base64,${part.inlineData.data}`;
+    const res = await fetch(RUNWARE_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key()}` },
+      body: JSON.stringify([
+        {
+          taskType: 'imageInference',
+          taskUUID: crypto.randomUUID(),
+          model: env.imageModel,
+          positivePrompt: refined,
+          width,
+          height,
+          numberResults: 1,
+          outputType: 'dataURI',
+          outputFormat: 'JPG',
+        },
+      ]),
+    });
+    const raw = await res.text();
+    let j: any = null;
+    try {
+      j = JSON.parse(raw);
+    } catch {
+      /* pastda */
+    }
+    if (!res.ok || j?.errors?.length) {
+      const m = j?.errors?.[0]?.message || j?.error?.message || raw;
+      throw new Error(`${res.status} ${m}`);
+    }
+    const item = j?.data?.[0];
+    if (item?.imageDataURI) return String(item.imageDataURI);
+    if (item?.imageBase64Data) return `data:image/jpeg;base64,${item.imageBase64Data}`;
+    if (item?.imageURL) {
+      const r = await fetch(item.imageURL);
+      if (!r.ok) throw new Error(`Rasmni yuklab bo'lmadi (${r.status})`);
+      const buf = Buffer.from(await r.arrayBuffer());
+      return `data:${r.headers.get('content-type') || 'image/jpeg'};base64,${buf.toString('base64')}`;
     }
   } catch (e) {
     throw wrapError(e);
   }
-  throw new HttpError(502, 'AI rasm qaytarmadi (limit yoki xavfsizlik filtri bo\'lishi mumkin)');
+  throw new HttpError(502, "AI rasm qaytarmadi (limit yoki xavfsizlik filtri bo'lishi mumkin)");
 }
 
 export async function generateFile(topic: string, fileType: string, instructions: string, language: string) {
