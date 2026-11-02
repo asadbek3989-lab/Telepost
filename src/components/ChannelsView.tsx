@@ -64,6 +64,7 @@ const ChannelCard: React.FC<{ c: Channel; onChanged: () => void; onSelect: () =>
           niche: f.niche,
           audience: f.audience,
           timezone: f.timezone,
+          maxPostChars: f.maxPostChars ?? 900,
           autopilot: { ...ap, topics: topicsText.split('\n').map((s) => s.trim()).filter(Boolean) },
         },
       });
@@ -117,11 +118,23 @@ const ChannelCard: React.FC<{ c: Channel; onChanged: () => void; onSelect: () =>
                 {LANGUAGES.map((l) => <option key={l.id} value={l.id}>{l.label}</option>)}
               </select>
             </div>
-            <div className="sm:col-span-2">
-              <label className="font-semibold text-slate-300 mb-1.5 block">Vaqt zonasi (rejalar va avtopilot uchun)</label>
+            <div>
+              <label className="font-semibold text-slate-300 mb-1.5 block">Vaqt zonasi</label>
               <select value={f.timezone} onChange={(e) => setF({ ...f, timezone: e.target.value })} className={inputCls}>
                 {(ZONES.includes(f.timezone) ? ZONES : [f.timezone, ...ZONES]).map((z) => <option key={z} value={z}>{z}</option>)}
               </select>
+            </div>
+            <div>
+              <label className="font-semibold text-slate-300 mb-1.5 block">AI post uzunligi (belgi)</label>
+              <input
+                type="number"
+                min={300}
+                max={1000}
+                value={f.maxPostChars ?? 900}
+                onChange={(e) => setF({ ...f, maxPostChars: Math.min(1000, Math.max(300, Number(e.target.value) || 900)) })}
+                className={inputCls}
+              />
+              <p className="text-[10px] text-slate-500 mt-1">300–1000. Tavsiya: 800–900. Imzo hisobga olinmaydi.</p>
             </div>
           </div>
 

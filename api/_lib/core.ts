@@ -170,6 +170,7 @@ export async function autopilotOne(channel: Channel): Promise<string> {
     hasImage: ap.withImage,
     recentTopics: recent,
     useSearch: templateType === 'news',
+    maxChars: channel.maxPostChars ?? 900,
   });
 
   let imageData: string | undefined;

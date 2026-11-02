@@ -1,7 +1,7 @@
 import { GoogleGenAI } from '@google/genai';
 import { env } from './env.js';
 import { HttpError } from './http.js';
-import { sanitizeTelegramHtml } from '../../shared/telegramHtml.js';
+import { plainLength, sanitizeTelegramHtml } from '../../shared/telegramHtml.js';
 
 let client: GoogleGenAI | null = null;
 function ai(): GoogleGenAI {
@@ -41,9 +41,12 @@ function parseJson(raw: string): any {
   throw new HttpError(502, "AI javobini o'qib bo'lmadi, qayta urinib ko'ring");
 }
 
-function withTimeout<T>(p: Promise<T>, ms = 50_000): Promise<T> {
+function withTimeout<T>(p: Promise<T>, ms = 45_000): Promise<T> {
   return new Promise<T>((resolve, reject) => {
-    const t = setTimeout(() => reject(new HttpError(504, "AI javobi juda sekin keldi (50 soniya). Qayta urinib ko'ring yoki mavzuni qisqartiring.")), ms);
+    const t = setTimeout(
+      () => reject(new HttpError(504, "AI javobi juda sekin keldi. Qayta urinib ko'ring yoki GEMINI_MODEL ni flash-lite qilib qo'ying.")),
+      ms
+    );
     p.then(
       (v) => {
         clearTimeout(t);
@@ -62,38 +65,62 @@ const isQuota = (e: any) => /quota|RESOURCE_EXHAUSTED|\b429\b|rate.?limit/i.test
 const isThinkingErr = (e: any) => /thinking/i.test(errText(e));
 
 async function callModel(model: string, prompt: string, base: Record<string, any>, ms: number) {
+  // Tezlik: minimal thinking + maxOutputTokens
+  const speedConfig: Record<string, any> = {
+    ...base,
+    maxOutputTokens: base.maxOutputTokens ?? 2048,
+    thinkingConfig: { thinkingLevel: 'LOW' },
+  };
   try {
-    // Tez javob uchun "o'ylash" darajasini pasaytiramiz
-    return await withTimeout(ai().models.generateContent({ model, contents: prompt, config: { ...base, thinkingConfig: { thinkingLevel: 'LOW' } } as any }), ms);
+    return await withTimeout(
+      ai().models.generateContent({ model, contents: prompt, config: speedConfig as any }),
+      ms
+    );
   } catch (e) {
-    if (isThinkingErr(e)) return await withTimeout(ai().models.generateContent({ model, contents: prompt, config: base as any }), ms);
+    if (isThinkingErr(e)) {
+      const { thinkingConfig: _, ...noThink } = speedConfig;
+      return await withTimeout(ai().models.generateContent({ model, contents: prompt, config: noThink as any }), ms);
+    }
     throw e;
   }
 }
 
 async function askJson(prompt: string, opts: { search?: boolean; temperature?: number } = {}): Promise<any> {
-  const temperature = opts.temperature ?? 0.9;
-  const run = async (withSearch: boolean) => {
-    const base: Record<string, any> = withSearch ? { tools: [{ googleSearch: {} }], temperature } : { responseMimeType: 'application/json', temperature };
-    try {
-      return await callModel(env.textModel, prompt, base, 40_000);
-    } catch (e) {
-      // Asosiy model limiti tugasa, yengilroq zaxira modelga o'tamiz (limit xatosida bir xil modelni qayta urmaymiz)
-      if (isQuota(e) && env.fallbackModel && env.fallbackModel !== env.textModel) {
-        return await callModel(env.fallbackModel, prompt, base, 30_000);
-      }
-      throw e;
-    }
+  const temperature = opts.temperature ?? 0.85;
+  // Avval tezkor model (fallback), keyin asosiy — odatda flash-lite 5–15 soniyada javob beradi
+  const models = [env.fallbackModel, env.textModel].filter((m, i, a) => m && a.indexOf(m) === i);
+  const run = async (model: string, withSearch: boolean) => {
+    const base: Record<string, any> = withSearch
+      ? { tools: [{ googleSearch: {} }], temperature, maxOutputTokens: 2048 }
+      : { responseMimeType: 'application/json', temperature, maxOutputTokens: 2048 };
+    return await callModel(model, prompt, base, withSearch ? 40_000 : 28_000);
   };
   try {
-    let res;
-    try {
-      res = await run(!!opts.search);
-    } catch (e) {
-      if (!opts.search || (e instanceof HttpError && e.status === 504) || isQuota(e)) throw e;
-      res = await run(false);
+    let lastErr: any;
+    // 1) Tez model, searchsiz
+    for (const model of models) {
+      try {
+        if (opts.search) {
+          // Search sekin — avval searchsiz urinib ko'ramiz, keyin search
+          try {
+            const res = await run(model, false);
+            return parseJson(res.text || '');
+          } catch {
+            /* search bilan qayta */
+          }
+          const res = await run(model, true);
+          return parseJson(res.text || '');
+        }
+        const res = await run(model, false);
+        return parseJson(res.text || '');
+      } catch (e) {
+        lastErr = e;
+        if (isQuota(e)) continue; // keyingi model
+        if (e instanceof HttpError && e.status === 504) continue;
+        // boshqa xato — keyingi modelga o'tamiz
+      }
     }
-    return parseJson(res.text || '');
+    throw lastErr || new HttpError(502, 'AI javob bermadi');
   } catch (e) {
     throw wrapError(e);
   }
@@ -147,6 +174,8 @@ export interface PostParams {
   fileRequest?: string;
   recentTopics?: string[];
   useSearch?: boolean;
+  /** Admin belgilagan maksimal belgi (300–1000), default 900 */
+  maxChars?: number;
 }
 
 export interface GeneratedPost {
@@ -161,50 +190,36 @@ export interface GeneratedPost {
 }
 
 export async function generatePost(p: PostParams): Promise<GeneratedPost> {
-  const maxChars = p.hasImage ? 950 : 1600;
+  // Hard max 1000; default 900; rasm bilan biroz qisqaroq
+  const requested = p.maxChars && Number.isFinite(p.maxChars) ? Math.floor(p.maxChars) : 900;
+  const maxChars = Math.min(1000, Math.max(300, p.hasImage ? Math.min(requested, 900) : requested));
   const topicLine = p.autoTopic
-    ? "Mavzuni o'zing tanla: kanal yo'nalishiga mos, hozir o'quvchilarni qiziqtiradigan YANGI va aniq mavzu (umumiy emas)."
+    ? "Mavzuni o'zing tanla: kanalga mos, aniq va yangi (umumiy emas)."
     : `Mavzu: ${p.topic}`;
 
-  const prompt = `
-Sen tajribali Telegram kanal muharriri va SMM mutaxassisisan. Vazifang — kanal obunachilari oxirigacha o'qiydigan, saqlab qo'yadigan va ulashadigan post yozish.
+  // Qisqa prompt = tezroq javob
+  const prompt = `Telegram post yoz. JSON qaytar.
 
-KANAL: ${p.channelTitle || 'Telegram kanal'}
-${p.niche ? `Kanal yo'nalishi / brend ovozi: ${p.niche}` : ''}
-Auditoriya: ${p.audience || "Telegram kanal o'quvchilari"}
+Kanal: ${p.channelTitle || 'Telegram'}
+${p.niche ? `Yo'nalish: ${p.niche}` : ''}
+Auditoriya: ${p.audience || "o'quvchilar"}
 ${topicLine}
-Post turi: ${p.templateType} — ${TEMPLATE[p.templateType] || TEMPLATE.custom}
+Turi: ${p.templateType} — ${TEMPLATE[p.templateType] || TEMPLATE.custom}
 Ohang: ${TONE[p.tone] || TONE["do'stona"]}
 Til: ${LANG[p.language] || LANG['uz-lat']}
-${p.recentTopics?.length ? `Yaqinda joylangan mavzular (TAKRORLAMA, boshqa burchakdan yoz): ${p.recentTopics.slice(0, 12).join(' | ')}` : ''}
-${p.wantFile ? `Postga ilova qilinadigan fayl ham kerak: "${p.fileRequest || p.topic}". Fayl nomi va to'liq foydali matnini tayyorla.` : ''}
+${p.recentTopics?.length ? `Takrorlama: ${p.recentTopics.slice(0, 8).join(' | ')}` : ''}
+${p.wantFile ? `Fayl ham kerak: "${p.fileRequest || p.topic}"` : ''}
 
-SIFAT TALABLARI:
-- 1-qator "ilgak" (hook): qiziqtiradigan, aniq sarlavha + mos emoji. "Bugun sizga ... haqida aytib beraman" kabi bo'sh kirish YO'Q.
-- Qisqa paragraflar (1-3 jumla), orasida bo'sh qator. Mobil ekranda o'qish qulay bo'lsin.
-- Umumiy "suv" gaplar emas — aniq, amaliy, qiymatli ma'lumot.
-- Aniq raqam, sana, ism, statistika va iqtiboslarni FAQAT ishonchli bo'lsagina yoz. Bilmasang to'qima — umumiyroq, lekin to'g'ri ifodala.
-- Oxirida o'quvchini harakatga chaqir (savol, "saqlab qo'ying", "do'stingizga yuboring").
-- Oxirida mavzuga oid 3-5 ta hashtag.
-- Matn uzunligi (teglarsiz) ${maxChars} belgidan oshmasin.
+Qoidalar:
+- 1-qator kuchli ilgak + emoji. Bo'sh kirish yo'q.
+- Qisqa paragraflar, amaliy ma'lumot, oxirida CTA + 3-5 hashtag.
+- Faqat Telegram HTML (<b><i><u><s><code><blockquote><a>). Markdown yo'q.
+- Matn ≤ ${maxChars} belgi. Imzo qo'shma.
 
-FORMAT (qat'iy):
-- Faqat Telegram HTML: <b>, <i>, <u>, <s>, <code>, <blockquote>, <a href="...">. Boshqa teg va Markdown (**, #) ISHLATMA.
-- Imzo qo'shma (u avtomatik qo'shiladi).
+JSON:
+{"title":"qisqa nom","text":"HTML post","imagePrompt":"English image description, no text in image","ctaText":"2-4 so'z","file":${p.wantFile ? '{"name":"file.txt","content":"...","mimeType":"text/plain"}' : 'null'},"readingTime":"1 daqiqa","bestTime":"09:00-11:00","tip":"qisqa maslahat"}`;
 
-Faqat quyidagi JSON ni qaytar:
-{
-  "title": "Postning 3-7 so'zli qisqa nomi (ichki ro'yxat uchun)",
-  "text": "Telegram HTML formatidagi tayyor post matni",
-  "imagePrompt": "Shu post uchun ingliz tilida batafsil rasm tavsifi: aniq obyekt, kompozitsiya, rang, uslub. Rasmda matn/harf bo'lmasin.",
-  "ctaText": "Inline tugma uchun 2-4 so'zli matn (mos kelsa)",
-  "file": ${p.wantFile ? '{ "name": "fayl_nomi.txt", "content": "faylning to\'liq matni", "mimeType": "text/plain" }' : 'null'},
-  "readingTime": "masalan: 1 daqiqa",
-  "bestTime": "bu turdagi post uchun eng yaxshi vaqt oralig'i, masalan 09:00-11:00",
-  "tip": "shu postni ko'proq tarqatish uchun 1 ta qisqa maslahat"
-}`;
-
-  const d = await askJson(prompt, { search: !!p.useSearch, temperature: 0.9 });
+  const d = await askJson(prompt, { search: !!p.useSearch, temperature: 0.85 });
   const text = finalizeText(String(d.text || d.formattedText || ''), p.signature);
   if (!text) throw new HttpError(502, "AI bo'sh matn qaytardi, qayta urinib ko'ring");
   return {
@@ -230,7 +245,7 @@ export async function generateImage(prompt: string, aspectRatio = '1:1'): Promis
         contents: { parts: [{ text: refined }] },
         config: { imageConfig: { aspectRatio: aspectRatio as any } },
       }),
-      52_000
+      40_000
     );
     for (const part of res.candidates?.[0]?.content?.parts ?? []) {
       if (part.inlineData?.data) return `data:${part.inlineData.mimeType ?? 'image/png'};base64,${part.inlineData.data}`;

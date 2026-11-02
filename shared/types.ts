@@ -40,6 +40,11 @@ export interface Channel {
   niche: string;
   audience: string;
   timezone: string;
+  /**
+   * AI yozadigan postning taxminiy maksimal belgi soni (imzosiz).
+   * Default 900, yuqori chegara 1000.
+   */
+  maxPostChars?: number;
   autopilot: Autopilot;
   createdAt: string;
   /** Kanalni qo'shgan adminning Telegram ID si */

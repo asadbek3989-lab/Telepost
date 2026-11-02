@@ -47,6 +47,7 @@ export function newChannel(base: Partial<Channel> & { id: string; title: string 
     niche: '',
     audience: '',
     timezone: 'Asia/Tashkent',
+    maxPostChars: 900,
     createdAt: new Date().toISOString(),
     ...base,
     autopilot: { ...DEFAULT_AUTOPILOT, ...(base.autopilot || {}) },

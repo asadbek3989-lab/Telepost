@@ -288,6 +288,11 @@ add('PUT', '/channels/:id', 'admin', async ({ params, body, session }) => {
   if (b.language !== undefined && (LANGUAGE_IDS as readonly string[]).includes(b.language)) c.language = b.language;
   if (b.niche !== undefined) c.niche = str(b.niche, 600);
   if (b.audience !== undefined) c.audience = str(b.audience, 300);
+  if (b.maxPostChars !== undefined) {
+    const n = Number(b.maxPostChars);
+    if (!Number.isFinite(n)) throw new HttpError(400, 'maxPostChars son bo\'lishi kerak');
+    c.maxPostChars = Math.min(1000, Math.max(300, Math.floor(n)));
+  }
   if (b.timezone !== undefined) {
     if (!isTz(String(b.timezone))) throw new HttpError(400, "Vaqt zonasi noto'g'ri (masalan Asia/Tashkent)");
     c.timezone = String(b.timezone);
@@ -555,6 +560,11 @@ add('POST', '/ai/post', 'admin', async ({ body, session }) => {
   if (!auto && !topic) throw new HttpError(400, 'Mavzu kiritilishi shart');
   const recent = channel ? (await listPosts(channel.id)).slice(0, 12).map((p) => p.topic) : [];
   const templateType = (TEMPLATE_IDS as readonly string[]).includes(b.templateType) ? b.templateType : 'custom';
+  const maxFromBody = Number(b.maxChars);
+  const maxChars =
+    Number.isFinite(maxFromBody) && maxFromBody > 0
+      ? maxFromBody
+      : channel?.maxPostChars ?? 900;
   const data = await generatePost({
     topic,
     autoTopic: auto,
@@ -570,6 +580,7 @@ add('POST', '/ai/post', 'admin', async ({ body, session }) => {
     fileRequest: str(b.fileRequest, 400),
     recentTopics: recent,
     useSearch: templateType === 'news',
+    maxChars,
   });
   return { success: true, data };
 });

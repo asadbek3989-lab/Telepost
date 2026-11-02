@@ -13,7 +13,8 @@ export const env = {
     return process.env.GEMINI_API_KEY || '';
   },
   get textModel() {
-    return process.env.GEMINI_MODEL || 'gemini-3.8-flash';
+    // Tez model: flash-lite (odatda 5–15 s). Sifat kerak bo'lsa: GEMINI_MODEL=gemini-3.8-flash
+    return process.env.GEMINI_MODEL || 'gemini-3.5-flash-lite';
   },
   get fallbackModel() {
     return process.env.GEMINI_FALLBACK_MODEL || 'gemini-3.1-flash-lite';
