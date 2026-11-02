@@ -1,4 +1,4 @@
-import { allAdminIds } from './auth.js';
+import { allAdminIds, isOwner } from './auth.js';
 import { generateImage, generatePost } from './ai.js';
 import { env } from './env.js';
 import { HttpError } from './http.js';
@@ -198,6 +198,8 @@ export async function autopilotOne(channel: Channel): Promise<string> {
 
   if (ap.requireApproval) {
     post.awaiting = true;
+    const hours = ap.approvalDeadlineHours ?? 24;
+    post.approvalDeadline = new Date(Date.now() + hours * 3600_000).toISOString();
     const fileId = await notifyApproval(post, channel, imageData);
     if (fileId) await saveMedia(post.id, { tgFileId: fileId });
     else if (imageData && imageData.length < 900_000) {
@@ -207,7 +209,7 @@ export async function autopilotOne(channel: Channel): Promise<string> {
       post.mediaType = 'none';
     }
     await savePost(post);
-    return `${channel.title}: tasdiqlash uchun yuborildi`;
+    return `${channel.title}: tasdiqlash uchun yuborildi (${hours} soat muddat)`;
   }
 
   await savePost(post);
@@ -237,7 +239,12 @@ async function runAutopilot(budgetEndMs: number): Promise<string[]> {
 
   for (const channel of channels) {
     const local = zonedParts(now, channel.timezone);
-    for (const slot of channel.autopilot.times) {
+    const ap = channel.autopilot;
+    // Haftaning kunlari filtri (bo'sh = har kuni)
+    if (Array.isArray(ap.weekdays) && ap.weekdays.length > 0 && !ap.weekdays.includes(local.weekday)) {
+      continue;
+    }
+    for (const slot of ap.times) {
       const m = slot.match(/^(\d{1,2}):(\d{2})$/);
       if (!m) continue;
       const diff = local.minutes - (Number(m[1]) * 60 + Number(m[2]));
@@ -255,7 +262,11 @@ async function runAutopilot(budgetEndMs: number): Promise<string[]> {
         const fails = await nextCounter(`slotfail:${slotKey}`);
         if (fails < 3) await releaseSlot(slotKey);
         else {
-          for (const a of (await allAdminIds()).filter((id) => /^\d+$/.test(id))) {
+          // Faqat kanal egasiga xabar (addedBy) yoki super adminlarga
+          const targets = new Set<string>();
+          if (channel.addedBy && /^\d+$/.test(channel.addedBy)) targets.add(channel.addedBy);
+          for (const a of await allAdminIds()) if (/^\d+$/.test(a) && isOwner(a)) targets.add(a);
+          for (const a of targets) {
             await dm(a, `⚠️ <b>Avtopilot xatosi</b> (${escapeHtml(channel.title)}, ${slot})\n${escapeHtml(e?.message || 'Noma\'lum xato')}`);
           }
         }

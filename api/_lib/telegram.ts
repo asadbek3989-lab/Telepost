@@ -101,6 +101,19 @@ export async function fetchChannelInfo(chatRef: string): Promise<Channel> {
   };
 }
 
+/** Foydalanuvchi kanalda creator yoki administrator ekanligini tekshiradi */
+export async function assertUserIsChannelAdmin(chatId: string | number, userId: string | number) {
+  try {
+    const member: any = await tg('getChatMember', { chat_id: chatId, user_id: Number(userId) });
+    if (!['creator', 'administrator'].includes(member.status)) {
+      throw new HttpError(403, 'Siz bu kanalning administratorisiz emas. Faqat o\'z kanallarini qo\'shishingiz mumkin.');
+    }
+  } catch (e: any) {
+    if (e instanceof HttpError) throw e;
+    throw new HttpError(400, 'Kanal a\'zoligini tekshirib bo\'lmadi. Bot kanalda admin ekanligiga ishonch hosil qiling.');
+  }
+}
+
 function dataUrlToBlob(dataUrl: string): { blob: Blob; mime: string } {
   const comma = dataUrl.indexOf(',');
   const meta = dataUrl.slice(0, comma);

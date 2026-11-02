@@ -1,5 +1,5 @@
 import { getDb } from './db.js';
-import type { Autopilot, Channel, FileData, Post, PostFull } from '../../shared/types.js';
+import type { AdminQuota, Autopilot, Channel, FileData, Post, PostFull } from '../../shared/types.js';
 
 const K = {
   channels: 'tp:channels',
@@ -7,6 +7,7 @@ const K = {
   media: (id: string) => `tp:media:${id}`,
   queue: 'tp:queue',
   admins: 'tp:admins',
+  quota: (id: string) => `tp:quota:${id}`,
   lock: (id: string) => `tp:lock:${id}`,
   meta: (k: string) => `tp:meta:${k}`,
 };
@@ -29,10 +30,12 @@ const parse = <T>(s: string | null | undefined): T | null => {
 export const DEFAULT_AUTOPILOT: Autopilot = {
   enabled: false,
   times: ['09:00', '14:00', '19:00'],
+  weekdays: [], // bo'sh = har kuni
   topics: [],
   templates: ['news', 'educational', 'motivation'],
   withImage: true,
   requireApproval: true,
+  approvalDeadlineHours: 24,
 };
 
 export function newChannel(base: Partial<Channel> & { id: string; title: string }): Channel {
@@ -60,9 +63,24 @@ export async function listChannels(): Promise<Channel[]> {
     .sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 }
 
+/** Admin faqat o'z kanallarini, owner barchasini ko'radi */
+export async function listChannelsFor(session: { id: string; role: string }): Promise<Channel[]> {
+  const all = await listChannels();
+  if (session.role === 'owner') return all;
+  return all.filter((c) => c.addedBy === session.id);
+}
+
 export async function getChannel(id: string): Promise<Channel | null> {
   const c = parse<Channel>(await getDb().hget(K.channels, id));
   return c ? { ...c, autopilot: { ...DEFAULT_AUTOPILOT, ...(c.autopilot || {}) } } : null;
+}
+
+export async function canAccessChannel(session: { id: string; role: string }, channelId: string): Promise<Channel | null> {
+  const c = await getChannel(channelId);
+  if (!c) return null;
+  if (session.role === 'owner') return c;
+  if (c.addedBy === session.id) return c;
+  return null;
 }
 
 export async function saveChannel(c: Channel) {
@@ -93,6 +111,16 @@ export async function listPosts(channelId?: string): Promise<Post[]> {
     .map((v) => parse<Post>(v))
     .filter((p): p is Post => !!p && (!channelId || p.channelId === channelId))
     .sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+}
+
+export async function listPostsFor(session: { id: string; role: string }, channelId?: string): Promise<Post[]> {
+  const channels = await listChannelsFor(session);
+  const allowed = new Set(channels.map((c) => c.id));
+  let posts = await listPosts(channelId);
+  if (session.role !== 'owner') {
+    posts = posts.filter((p) => allowed.has(p.channelId));
+  }
+  return posts;
 }
 
 export async function deletePost(id: string) {
@@ -130,6 +158,38 @@ export const dueQueue = (nowMs: number, limit = 20) => getDb().zrangebyscore(K.q
 export const listExtraAdmins = () => getDb().smembers(K.admins);
 export const addExtraAdmin = (id: string) => getDb().sadd(K.admins, id);
 export const removeExtraAdmin = (id: string) => getDb().srem(K.admins, id);
+
+// ---------- AI kvota ----------
+function todayUtc(): string {
+  return new Date().toISOString().slice(0, 10);
+}
+
+export async function getQuota(adminId: string): Promise<AdminQuota> {
+  const raw = await getDb().get(K.quota(adminId));
+  const q = parse<AdminQuota>(raw);
+  const today = todayUtc();
+  if (!q) return { dailyLimit: 0, usedToday: 0, date: today };
+  if (q.date !== today) return { dailyLimit: q.dailyLimit, usedToday: 0, date: today };
+  return q;
+}
+
+export async function setQuotaLimit(adminId: string, dailyLimit: number): Promise<AdminQuota> {
+  const q = await getQuota(adminId);
+  q.dailyLimit = Math.max(0, Math.floor(dailyLimit));
+  await getDb().set(K.quota(adminId), JSON.stringify(q));
+  return q;
+}
+
+/** AI chaqirishdan oldin chaqiriladi. Limit oshsa false qaytaradi. */
+export async function consumeQuota(adminId: string, cost = 1): Promise<{ ok: boolean; quota: AdminQuota }> {
+  const q = await getQuota(adminId);
+  if (q.dailyLimit > 0 && q.usedToday + cost > q.dailyLimit) {
+    return { ok: false, quota: q };
+  }
+  q.usedToday += cost;
+  await getDb().set(K.quota(adminId), JSON.stringify(q));
+  return { ok: true, quota: q };
+}
 
 // ---------- Qulf va meta ----------
 export const acquireLock = (name: string, seconds: number) =>

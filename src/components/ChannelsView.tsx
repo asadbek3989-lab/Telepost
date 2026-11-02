@@ -193,8 +193,9 @@ export const ChannelsView: React.FC<Props> = ({ channels, session, onChanged, on
   const [adding, setAdding] = useState(false);
   const [notice, setNotice] = useState<NoticeState | null>(null);
   const [status, setStatus] = useState<any>(null);
-  const [admins, setAdmins] = useState<{ owners: string[]; admins: string[] } | null>(null);
+  const [admins, setAdmins] = useState<{ admins: string[]; quotas?: Record<string, { dailyLimit: number; usedToday: number }> } | null>(null);
   const [newAdmin, setNewAdmin] = useState('');
+  const [newQuota, setNewQuota] = useState('50');
 
   const loadStatus = () => api('/status').then(setStatus).catch(() => setStatus(null));
   const loadAdmins = () => session.role === 'owner' && api('/admins').then(setAdmins).catch(() => null);
@@ -223,8 +224,8 @@ export const ChannelsView: React.FC<Props> = ({ channels, session, onChanged, on
 
   const addAdmin = async () => {
     try {
-      const r = await api<{ admins: string[] }>('/admins', { body: { id: newAdmin } });
-      setAdmins((a) => (a ? { ...a, admins: r.admins } : a));
+      const r = await api<{ admins: string[]; quotas?: any }>('/admins', { body: { id: newAdmin, dailyLimit: Number(newQuota) || 0 } });
+      setAdmins({ admins: r.admins, quotas: r.quotas });
       setNewAdmin('');
     } catch (e: any) {
       setNotice({ type: 'error', message: e?.message });
@@ -235,6 +236,19 @@ export const ChannelsView: React.FC<Props> = ({ channels, session, onChanged, on
     if (!(await confirmDialog(`${id} adminlikdan olinsinmi?`))) return;
     const r = await api<{ admins: string[] }>(`/admins/${id}`, { method: 'DELETE' });
     setAdmins((a) => (a ? { ...a, admins: r.admins } : a));
+  };
+
+  const setAdminQuota = async (id: string) => {
+    const val = prompt(`Kunlik AI limiti (${id}). 0 = cheksiz:`, String(admins?.quotas?.[id]?.dailyLimit ?? 50));
+    if (val === null) return;
+    const n = Number(val);
+    if (!Number.isFinite(n) || n < 0) return;
+    try {
+      await api(`/admins/${id}/quota`, { method: 'PUT', body: { dailyLimit: n } });
+      loadAdmins();
+    } catch (e: any) {
+      setNotice({ type: 'error', message: e?.message });
+    }
   };
 
   const cronOk = status?.cronLast ? Date.now() - new Date(status.cronLast).getTime() < 10 * 60_000 : false;
@@ -290,14 +304,25 @@ export const ChannelsView: React.FC<Props> = ({ channels, session, onChanged, on
 
       {session.role === 'owner' && admins && (
         <Card className="space-y-3">
-          <h3 className="text-sm font-bold text-slate-200">Adminlar</h3>
-          <p className="text-[11px] text-slate-500">Adminlar barcha ulangan kanallarni boshqara oladi. Telegram ID ni bilish uchun botga /id yozing.</p>
-          <div className="flex flex-wrap gap-1.5 text-xs">
-            {admins.owners.map((id) => <span key={id} className="px-2.5 py-1 rounded-lg bg-amber-500/10 text-amber-300 border border-amber-500/30">👑 {id}</span>)}
-            {admins.admins.map((id) => <button key={id} onClick={() => removeAdmin(id)} className="px-2.5 py-1 rounded-lg bg-slate-800 text-slate-200 border border-slate-700 hover:text-red-300">{id} ✕</button>)}
+          <h3 className="text-sm font-bold text-slate-200">Adminlar va AI kvotasi</h3>
+          <p className="text-[11px] text-slate-500">Har bir admin faqat o'zi ulagan kanallarni ko'radi. Super admin ID va kanallari boshqalarga ko'rinmaydi. AI kvotasini kunlik belgilang (0 = cheksiz).</p>
+          <div className="space-y-1.5 text-xs">
+            {(admins.admins || []).map((id) => {
+              const q = admins.quotas?.[id];
+              return (
+                <div key={id} className="flex items-center gap-2 px-2.5 py-1.5 rounded-lg bg-slate-800/80 border border-slate-700">
+                  <span className="text-slate-200">{id}</span>
+                  <span className="text-slate-400 ml-auto">{q ? `${q.usedToday}/${q.dailyLimit || '∞'}` : '—'}</span>
+                  <button onClick={() => setAdminQuota(id)} className="text-sky-400 hover:text-sky-300">kvota</button>
+                  <button onClick={() => removeAdmin(id)} className="text-red-400 hover:text-red-300">✕</button>
+                </div>
+              );
+            })}
+            {!admins.admins?.length && <p className="text-slate-500">Hali qo'shimcha admin yo'q</p>}
           </div>
-          <div className="flex gap-2">
-            <input value={newAdmin} onChange={(e) => setNewAdmin(e.target.value.replace(/\D/g, ''))} placeholder="Telegram ID (raqam)" className={`${inputCls} !py-2`} inputMode="numeric" />
+          <div className="flex gap-2 flex-wrap">
+            <input value={newAdmin} onChange={(e) => setNewAdmin(e.target.value.replace(/\D/g, ''))} placeholder="Telegram ID" className={`${inputCls} !py-2 max-w-[140px]`} inputMode="numeric" />
+            <input value={newQuota} onChange={(e) => setNewQuota(e.target.value.replace(/\D/g, ''))} placeholder="Kunlik AI" className={`${inputCls} !py-2 max-w-[100px]`} inputMode="numeric" title="Kunlik AI limiti" />
             <button onClick={addAdmin} disabled={newAdmin.length < 4} className="px-4 rounded-xl bg-slate-800 border border-slate-700 text-slate-200 text-sm disabled:opacity-50">Qo'shish</button>
           </div>
         </Card>

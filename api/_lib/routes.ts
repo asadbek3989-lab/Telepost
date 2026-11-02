@@ -6,6 +6,8 @@ import { env } from './env.js';
 import { HttpError, header, originOf, type Req, type Res } from './http.js';
 import {
   addExtraAdmin,
+  canAccessChannel,
+  consumeQuota,
   dequeue,
   deleteChannel,
   deletePost,
@@ -15,9 +17,12 @@ import {
   getMeta,
   getPost,
   getPostFull,
+  getQuota,
   listChannels,
+  listChannelsFor,
   listExtraAdmins,
   listPosts,
+  listPostsFor,
   newChannel,
   newId,
   removeExtraAdmin,
@@ -25,9 +30,10 @@ import {
   saveMedia,
   savePost,
   setMeta,
+  setQuotaLimit,
   DEFAULT_AUTOPILOT,
 } from './store.js';
-import { fetchChannelInfo, getMe, normalizeChatRef, sendPostToChannel, tg } from './telegram.js';
+import { assertUserIsChannelAdmin, dm, fetchChannelInfo, getMe, normalizeChatRef, sendPostToChannel, tg } from './telegram.js';
 import { handleUpdate } from './webhook.js';
 import { escapeHtml, plainLength, sanitizeTelegramHtml } from '../../shared/telegramHtml.js';
 import { TEMPLATE_IDS, TONE_IDS, LANGUAGE_IDS } from '../../shared/types.js';
@@ -70,8 +76,14 @@ const isTz = (tz: string) => {
   }
 };
 
-async function mustChannel(id: string | undefined): Promise<Channel> {
-  const c = id ? await getChannel(String(id)) : null;
+async function mustChannel(id: string | undefined, session?: SessionInfo | null): Promise<Channel> {
+  if (!id) throw new HttpError(404, 'Kanal topilmadi');
+  if (session) {
+    const c = await canAccessChannel(session, String(id));
+    if (!c) throw new HttpError(404, 'Kanal topilmadi yoki ruxsat yo\'q');
+    return c;
+  }
+  const c = await getChannel(String(id));
   if (!c) throw new HttpError(404, 'Kanal topilmadi');
   return c;
 }
@@ -208,9 +220,13 @@ add('GET', '/status', 'admin', async () => {
 });
 
 // ======================= Kanallar =======================
-add('GET', '/channels', 'admin', async () => ({ success: true, channels: await listChannels() }));
+add('GET', '/channels', 'admin', async ({ session }) => ({
+  success: true,
+  channels: await listChannelsFor(session!),
+}));
 
 add('POST', '/channels', 'admin', async ({ body, session }) => {
+  if (!session) throw new HttpError(401, 'Avtorizatsiya kerak');
   const ref = normalizeChatRef(String(body?.chat || ''));
   if (!ref) throw new HttpError(400, "Kanal username'i yoki ID sini kiriting (masalan @kanalim)");
   let info: Channel;
@@ -221,10 +237,18 @@ add('POST', '/channels', 'admin', async ({ body, session }) => {
     if (/chat not found/i.test(e?.message)) throw new HttpError(400, "Kanal topilmadi. Username to'g'riligini va bot kanalga qo'shilganini tekshiring.");
     throw new HttpError(400, e?.message || 'Kanalni tekshirib bo\'lmadi');
   }
+  // Foydalanuvchi o'zi kanal admini ekanligini tekshirish (owner ham)
+  if (session.id !== 'password') {
+    await assertUserIsChannelAdmin(info.id, session.id);
+  }
   const existing = await getChannel(info.id);
+  // Boshqa adminning kanalini tortib olish mumkin emas
+  if (existing && existing.addedBy && existing.addedBy !== session.id && session.role !== 'owner') {
+    throw new HttpError(403, 'Bu kanal allaqachon boshqa admin tomonidan ulangan');
+  }
   const channel = existing
     ? { ...existing, title: info.title, username: info.username, memberCount: info.memberCount, memberCountAt: info.memberCountAt }
-    : newChannel({ ...info, addedBy: session?.id, signature: info.username ? `👉 @${info.username}` : '' });
+    : newChannel({ ...info, addedBy: session.id, signature: info.username ? `👉 @${info.username}` : '' });
   await saveChannel(channel);
   return { success: true, channel };
 });
@@ -234,20 +258,30 @@ function sanitizeAutopilot(input: any, current: Autopilot): Autopilot {
   const times = Array.isArray(a.times)
     ? [...new Set<string>(a.times.map((t: any) => String(t)).filter((t: string) => /^([01]?\d|2[0-3]):[0-5]\d$/.test(t)).map((t: string) => t.padStart(5, '0')))].sort().slice(0, 8)
     : current.times;
+  const weekdays = Array.isArray(a.weekdays)
+    ? [...new Set<number>(a.weekdays.map((d: any) => Number(d)).filter((d: number) => d >= 0 && d <= 6))].sort().slice(0, 7)
+    : current.weekdays || [];
   const topics = Array.isArray(a.topics) ? a.topics.map((t: any) => str(t, 200)).filter(Boolean).slice(0, 30) : current.topics;
   const templates = Array.isArray(a.templates) ? a.templates.filter((t: any) => (TEMPLATE_IDS as readonly string[]).includes(t)).slice(0, 8) : current.templates;
+  let approvalDeadlineHours = current.approvalDeadlineHours ?? 24;
+  if (a.approvalDeadlineHours !== undefined) {
+    const n = Number(a.approvalDeadlineHours);
+    if (Number.isFinite(n)) approvalDeadlineHours = Math.min(168, Math.max(1, Math.floor(n)));
+  }
   return {
     enabled: typeof a.enabled === 'boolean' ? a.enabled : current.enabled,
     times,
+    weekdays,
     topics,
     templates,
     withImage: typeof a.withImage === 'boolean' ? a.withImage : current.withImage,
     requireApproval: typeof a.requireApproval === 'boolean' ? a.requireApproval : current.requireApproval,
+    approvalDeadlineHours,
   };
 }
 
-add('PUT', '/channels/:id', 'admin', async ({ params, body }) => {
-  const c = await mustChannel(params.id);
+add('PUT', '/channels/:id', 'admin', async ({ params, body, session }) => {
+  const c = await mustChannel(params.id, session);
   const b = body || {};
   if (b.signature !== undefined) c.signature = str(b.signature, 300);
   if (b.tone !== undefined && (TONE_IDS as readonly string[]).includes(b.tone)) c.tone = b.tone;
@@ -269,14 +303,14 @@ add('PUT', '/channels/:id', 'admin', async ({ params, body }) => {
   return { success: true, channel: c };
 });
 
-add('DELETE', '/channels/:id', 'admin', async ({ params }) => {
-  await mustChannel(params.id);
+add('DELETE', '/channels/:id', 'admin', async ({ params, session }) => {
+  await mustChannel(params.id, session);
   await deleteChannel(params.id);
   return { success: true };
 });
 
-add('POST', '/channels/:id/refresh', 'admin', async ({ params }) => {
-  const c = await mustChannel(params.id);
+add('POST', '/channels/:id/refresh', 'admin', async ({ params, session }) => {
+  const c = await mustChannel(params.id, session);
   const info = await fetchChannelInfo(c.id);
   c.title = info.title;
   c.username = info.username;
@@ -286,8 +320,8 @@ add('POST', '/channels/:id/refresh', 'admin', async ({ params }) => {
   return { success: true, channel: c };
 });
 
-add('POST', '/channels/:id/test', 'admin', async ({ params }) => {
-  const c = await mustChannel(params.id);
+add('POST', '/channels/:id/test', 'admin', async ({ params, session }) => {
+  const c = await mustChannel(params.id, session);
   const r = await sendPostToChannel(c, {
     text: `🚀 <b>TelePost AI ulandi!</b>\n\nBu sinov xabari — kanal admini ilovasi orqali yuborildi.\n#TelePostAI`,
     mediaType: 'none',
@@ -340,21 +374,22 @@ function publicPost(p: Post): Post {
   return p;
 }
 
-add('GET', '/posts', 'admin', async ({ query }) => {
-  let posts = await listPosts(query.channelId || undefined);
+add('GET', '/posts', 'admin', async ({ query, session }) => {
+  let posts = await listPostsFor(session!, query.channelId || undefined);
   if (query.status) posts = posts.filter((p) => p.status === query.status);
   return { success: true, posts: posts.slice(0, 300).map(publicPost) };
 });
 
-add('GET', '/posts/:id', 'admin', async ({ params }) => {
+add('GET', '/posts/:id', 'admin', async ({ params, session }) => {
   const post = await getPostFull(params.id);
   if (!post) throw new HttpError(404, 'Post topilmadi');
+  await mustChannel(post.channelId, session); // ruxsat tekshiruvi
   return { success: true, post };
 });
 
-add('POST', '/posts', 'admin', async ({ body }) => {
+add('POST', '/posts', 'admin', async ({ body, session }) => {
   const b = body || {};
-  const channel = await mustChannel(b.channelId);
+  const channel = await mustChannel(b.channelId, session);
   const { imageData, fileData } = pickMedia(b);
   const text = sanitizeTelegramHtml(String(b.text || ''));
   const mediaType = imageData ? 'image' : fileData ? 'file' : 'none';
@@ -500,9 +535,21 @@ add('POST', '/posts/:id/duplicate', 'admin', async ({ params }) => {
 });
 
 // ======================= AI =======================
-add('POST', '/ai/post', 'admin', async ({ body }) => {
+async function checkAiQuota(session: SessionInfo | null) {
+  if (!session || session.id === 'password' || session.role === 'owner') return; // owner cheksiz
+  const { ok, quota } = await consumeQuota(session.id, 1);
+  if (!ok) {
+    throw new HttpError(429, `AI kunlik limiti tugadi (${quota.usedToday}/${quota.dailyLimit}). Super admin kvotani oshirishi mumkin.`);
+  }
+}
+
+add('POST', '/ai/post', 'admin', async ({ body, session }) => {
+  await checkAiQuota(session);
   const b = body || {};
-  const channel = b.channelId ? await getChannel(String(b.channelId)) : null;
+  let channel = null;
+  if (b.channelId) {
+    channel = await mustChannel(String(b.channelId), session);
+  }
   const auto = !!b.auto;
   const topic = str(b.topic, 1000);
   if (!auto && !topic) throw new HttpError(400, 'Mavzu kiritilishi shart');
@@ -527,29 +574,33 @@ add('POST', '/ai/post', 'admin', async ({ body }) => {
   return { success: true, data };
 });
 
-add('POST', '/ai/image', 'admin', async ({ body }) => {
+add('POST', '/ai/image', 'admin', async ({ body, session }) => {
+  await checkAiQuota(session);
   const prompt = str(body?.prompt, 1500);
   if (!prompt) throw new HttpError(400, 'Rasm tavsifi kiritilmagan');
   const ratio = ['1:1', '16:9', '4:3', '3:4', '9:16'].includes(body?.aspectRatio) ? body.aspectRatio : '1:1';
   return { success: true, imageUrl: await generateImage(prompt, ratio) };
 });
 
-add('POST', '/ai/file', 'admin', async ({ body }) => {
+add('POST', '/ai/file', 'admin', async ({ body, session }) => {
+  await checkAiQuota(session);
   const topic = str(body?.topic, 500);
   if (!topic) throw new HttpError(400, 'Mavzu kiritilmagan');
   const fileData = await generateFile(topic, str(body?.fileType, 60) || "Qo'llanma", str(body?.instructions, 500), str(body?.language, 10) || 'uz-lat');
   return { success: true, fileData };
 });
 
-add('POST', '/ai/rewrite', 'admin', async ({ body }) => {
+add('POST', '/ai/rewrite', 'admin', async ({ body, session }) => {
+  await checkAiQuota(session);
   const text = String(body?.text || '');
   if (!text.trim()) throw new HttpError(400, "Matn bo'sh");
   return { success: true, text: await rewriteText(text.slice(0, 6000), String(body?.action || '')) };
 });
 
-add('POST', '/ai/plan', 'admin', async ({ body }) => {
+add('POST', '/ai/plan', 'admin', async ({ body, session }) => {
+  await checkAiQuota(session);
   const b = body || {};
-  const channel = await mustChannel(b.channelId);
+  const channel = await mustChannel(b.channelId, session);
   const days = Math.min(Math.max(parseInt(b.days) || 7, 1), 14);
   const perDay = Math.min(Math.max(parseInt(b.perDay) || 1, 1), 3);
   const defaults: Record<number, string[]> = { 1: ['10:00'], 2: ['09:00', '19:00'], 3: ['09:00', '14:00', '19:00'] };
@@ -593,10 +644,10 @@ add('POST', '/ai/plan', 'admin', async ({ body }) => {
 });
 
 // ======================= Statistika =======================
-add('GET', '/stats', 'admin', async ({ query }) => {
-  const channel = query.channelId ? await mustChannel(query.channelId) : null;
+add('GET', '/stats', 'admin', async ({ query, session }) => {
+  const channel = query.channelId ? await mustChannel(query.channelId, session) : null;
   const tz = channel?.timezone || 'Asia/Tashkent';
-  const posts = await listPosts(channel?.id);
+  const posts = channel ? await listPosts(channel.id) : await listPostsFor(session!);
   const sent = posts.filter((p) => p.status === 'sent' && p.sentAt);
 
   // A'zolar sonini yangilash (30 daqiqada bir marta)
@@ -665,19 +716,57 @@ add('GET', '/stats', 'admin', async ({ query }) => {
 });
 
 // ======================= Adminlar (faqat ega) =======================
-add('GET', '/admins', 'owner', async () => ({ success: true, owners: env.adminIds, admins: await listExtraAdmins() }));
+// Super admin ID lari hech kimga ochilmaydi — faqat qo'shimcha adminlar ro'yxati
+add('GET', '/admins', 'owner', async () => {
+  const admins = await listExtraAdmins();
+  const quotas: Record<string, Awaited<ReturnType<typeof getQuota>>> = {};
+  for (const id of admins) quotas[id] = await getQuota(id);
+  return { success: true, admins, quotas };
+});
 
 add('POST', '/admins', 'owner', async ({ body }) => {
   const id = String(body?.id || '').trim();
   if (!/^\d{4,15}$/.test(id)) throw new HttpError(400, "Telegram ID faqat raqamlardan iborat bo'lishi kerak");
   if (isOwner(id)) throw new HttpError(400, 'Bu foydalanuvchi allaqachon ega');
   await addExtraAdmin(id);
-  return { success: true, admins: await listExtraAdmins() };
+  const limit = Number(body?.dailyLimit);
+  if (Number.isFinite(limit) && limit >= 0) await setQuotaLimit(id, limit);
+  const admins = await listExtraAdmins();
+  const quotas: Record<string, Awaited<ReturnType<typeof getQuota>>> = {};
+  for (const aid of admins) quotas[aid] = await getQuota(aid);
+  return { success: true, admins, quotas };
 });
 
 add('DELETE', '/admins/:id', 'owner', async ({ params }) => {
   await removeExtraAdmin(params.id);
-  return { success: true, admins: await listExtraAdmins() };
+  const admins = await listExtraAdmins();
+  return { success: true, admins };
+});
+
+add('PUT', '/admins/:id/quota', 'owner', async ({ params, body }) => {
+  const id = String(params.id || '').trim();
+  if (!/^\d{4,15}$/.test(id)) throw new HttpError(400, 'Noto\'g\'ri ID');
+  const limit = Number(body?.dailyLimit);
+  if (!Number.isFinite(limit) || limit < 0) throw new HttpError(400, 'dailyLimit 0 yoki undan katta son bo\'lsin (0 = cheksiz)');
+  const quota = await setQuotaLimit(id, limit);
+  return { success: true, quota };
+});
+
+add('GET', '/me/quota', 'admin', async ({ session }) => {
+  if (!session || session.id === 'password' || session.role === 'owner') {
+    return { success: true, quota: { dailyLimit: 0, usedToday: 0, date: new Date().toISOString().slice(0, 10) } };
+  }
+  return { success: true, quota: await getQuota(session.id) };
+});
+
+/** Mini App dan botga preview yuborish (ilova ichida preview shart emas) */
+add('POST', '/preview/send', 'admin', async ({ body, session }) => {
+  if (!session || session.id === 'password') throw new HttpError(400, 'Faqat Telegram orqali');
+  const text = sanitizeTelegramHtml(String(body?.text || ''));
+  if (!text) throw new HttpError(400, 'Matn bo\'sh');
+  const title = str(body?.title, 120) || 'Preview';
+  await dm(session.id, `👁 <b>Preview: ${escapeHtml(title)}</b>\n\n${text}`);
+  return { success: true };
 });
 
 // ======================= Dispetcher =======================

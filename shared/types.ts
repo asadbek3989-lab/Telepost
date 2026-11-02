@@ -3,8 +3,14 @@ export type MediaType = 'none' | 'image' | 'file';
 
 export interface Autopilot {
   enabled: boolean;
-  /** Kanal vaqt zonasidagi "HH:MM" ko'rinishida kunlik yuborish vaqtlari */
+  /** Kanal vaqt zonasidagi "HH:MM" ko'rinishida yuborish vaqtlari */
   times: string[];
+  /**
+   * Haftaning kunlari (0 = Dushanba … 6 = Yakshanba).
+   * Bo'sh yoki yo'q = har kuni.
+   * Masalan [0,1,2,3,4] = ish kunlari.
+   */
+  weekdays?: number[];
   /** Aylanma mavzular. Bo'sh bo'lsa AI kanal yo'nalishiga qarab o'zi yangi mavzu tanlaydi */
   topics: string[];
   /** Aylanma post turlari (news, educational, ...) */
@@ -12,6 +18,12 @@ export interface Autopilot {
   withImage: boolean;
   /** true bo'lsa post avval adminga tasdiqlash uchun yuboriladi */
   requireApproval: boolean;
+  /**
+   * Tasdiqlash muddati (soat). requireApproval=true bo'lganda.
+   * Muddat o'tsa post avtomatik bekor qilinadi.
+   * Default: 24
+   */
+  approvalDeadlineHours?: number;
 }
 
 export interface Channel {
@@ -30,6 +42,7 @@ export interface Channel {
   timezone: string;
   autopilot: Autopilot;
   createdAt: string;
+  /** Kanalni qo'shgan adminning Telegram ID si */
   addedBy?: string;
 }
 
@@ -78,6 +91,8 @@ export interface Post {
   source?: 'manual' | 'plan' | 'autopilot';
   /** Autopilot postlari uchun: admin tasdig'ini kutmoqda */
   awaiting?: boolean;
+  /** Tasdiqlash muddati tugash vaqti (UTC ISO) */
+  approvalDeadline?: string;
 }
 
 /** Postni klient bilan almashishda ishlatiladigan to'liq ko'rinish (media bilan) */
@@ -90,6 +105,16 @@ export interface SessionInfo {
   id: string;
   name: string;
   role: 'owner' | 'admin';
+}
+
+/** Har bir admin uchun AI kvotasi (kunlik) */
+export interface AdminQuota {
+  /** Kunlik limit (0 = cheksiz) */
+  dailyLimit: number;
+  /** Bugungi ishlatilgan */
+  usedToday: number;
+  /** YYYY-MM-DD (UTC) */
+  date: string;
 }
 
 export interface StatsResult {
