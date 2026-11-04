@@ -1,9 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import { Bot, CheckCircle2, ChevronDown, ChevronUp, Plus, RefreshCw, Send, Settings, Trash2, Users, XCircle, AlertTriangle, LogOut, ShieldCheck } from 'lucide-react';
-import type { Channel, SessionInfo } from '../../shared/types';
+import { autopilotTimes, effectiveSlots, type AutopilotSlot, type Channel, type EmojiMode, type SessionInfo } from '../../shared/types';
 import { api, clearToken, confirmDialog, inTelegram } from '../lib/api';
 import { timeAgo } from '../lib/time';
-import { Card, inputCls, LANGUAGES, Notice, NoticeState, Spinner, TEMPLATES, TONES, Toggle } from './ui';
+import { Card, EMOJI_OPTIONS, inputCls, LANGUAGES, MAX_CHARS, MIN_CHARS, Notice, NoticeState, Spinner, TEMPLATES, TONES, Toggle, WEEKDAY_LABELS } from './ui';
 
 interface Props {
   channels: Channel[];
@@ -15,6 +15,21 @@ interface Props {
 }
 
 const ZONES = ['Asia/Tashkent', 'Asia/Almaty', 'Asia/Bishkek', 'Asia/Dushanbe', 'Asia/Ashgabat', 'Europe/Moscow', 'Europe/Istanbul', 'Asia/Dubai', 'Europe/Kyiv', 'Europe/London', 'UTC'];
+
+/** Formada slotlar doim aniq ro'yxat bo'lsin (eski `times` dan hosil qilinadi) */
+const withSlots = (c: Channel): Channel => ({ ...c, autopilot: { ...c.autopilot, slots: effectiveSlots(c.autopilot).map((x) => ({ ...x, weekdays: [...(x.weekdays || [])] })) } });
+
+/** «Rivojlanish Zonasi» kabi shaxsiy o'sish kanallari uchun tayyor andoza */
+const GROWTH_PRESET = {
+  niche:
+    "Shaxsiy rivojlanish: odatlar, intizom, mas'uliyat, kitob o'qish, o'z ustida ishlash, vaqtni boshqarish. Postlar hayotiy, amaliy va ilhomlantiruvchi; quruq shior va sun'iy iboralarsiz. O'quvchiga doim hurmat bilan «Siz» deb murojaat qilinadi.",
+  audience: "O'z ustida ishlashni istagan yoshlar va kattalar",
+  signature: "O'z ustida ishlashni to'xtatmaydiganlar uchun maxsus: 👉 @RivojlanishZonasi - Sizning shaxsiy o'sish hududingiz!",
+  tone: "do'stona",
+  language: 'uz-lat',
+  emojiMode: 'minimal' as EmojiMode,
+  maxPostChars: 1600,
+};
 
 const StatusRow: React.FC<{ ok: boolean | null; label: string; hint?: string }> = ({ ok, label, hint }) => (
   <div className="flex items-start gap-2 text-xs">
@@ -28,18 +43,34 @@ const StatusRow: React.FC<{ ok: boolean | null; label: string; hint?: string }> 
 
 const ChannelCard: React.FC<{ c: Channel; onChanged: () => void; onSelect: () => void; setNotice: (n: NoticeState) => void }> = ({ c, onChanged, onSelect, setNotice }) => {
   const [open, setOpen] = useState(false);
-  const [f, setF] = useState(c);
+  const [f, setF] = useState<Channel>(() => withSlots(c));
   const [topicsText, setTopicsText] = useState(c.autopilot.topics.join('\n'));
+  const [bannedText, setBannedText] = useState((c.bannedPhrases || []).join('\n'));
   const [newTime, setNewTime] = useState('12:00');
   const [busy, setBusy] = useState<null | 'save' | 'test' | 'refresh' | 'del'>(null);
 
   useEffect(() => {
-    setF(c);
+    setF(withSlots(c));
     setTopicsText(c.autopilot.topics.join('\n'));
+    setBannedText((c.bannedPhrases || []).join('\n'));
   }, [c]);
 
   const ap = f.autopilot;
   const setAp = (p: Partial<Channel['autopilot']>) => setF({ ...f, autopilot: { ...ap, ...p } });
+  const slots: AutopilotSlot[] = ap.slots || [];
+  const setSlots = (next: AutopilotSlot[]) => setAp({ slots: next });
+  const patchSlot = (id: string, p: Partial<AutopilotSlot>) => setSlots(slots.map((x) => (x.id === id ? { ...x, ...p } : x)));
+  const addSlot = () =>
+    setSlots([...slots, { id: `s_${Math.random().toString(36).slice(2, 8)}`, time: newTime || '12:00', weekdays: [], topic: '', templateType: 'educational' }]);
+  const toggleDay = (id: string, day: number) => {
+    const cur = slots.find((x) => x.id === id);
+    if (!cur) return;
+    patchSlot(id, { weekdays: cur.weekdays.includes(day) ? cur.weekdays.filter((d) => d !== day) : [...cur.weekdays, day].sort() });
+  };
+  const applyPreset = async () => {
+    if (!(await confirmDialog("Kanal yo'nalishi, auditoriya, imzo, ohang va uzunlik «Rivojlanish Zonasi» andozasi bilan almashtirilsinmi? (Saqlash tugmasini bosmaguncha o'zgarmaydi)"))) return;
+    setF({ ...f, ...GROWTH_PRESET });
+  };
 
   const run = async (kind: NonNullable<typeof busy>, fn: () => Promise<string | void>) => {
     setBusy(kind);
@@ -64,8 +95,11 @@ const ChannelCard: React.FC<{ c: Channel; onChanged: () => void; onSelect: () =>
           niche: f.niche,
           audience: f.audience,
           timezone: f.timezone,
-          maxPostChars: f.maxPostChars ?? 900,
-          autopilot: { ...ap, topics: topicsText.split('\n').map((s) => s.trim()).filter(Boolean) },
+          maxPostChars: f.maxPostChars ?? 1500,
+          emojiMode: f.emojiMode ?? 'minimal',
+          styleSample: f.styleSample ?? '',
+          bannedPhrases: bannedText.split('\n').map((x) => x.trim()).filter(Boolean),
+          autopilot: { ...ap, slots, topics: topicsText.split('\n').map((s) => s.trim()).filter(Boolean) },
         },
       });
       onChanged();
@@ -83,7 +117,7 @@ const ChannelCard: React.FC<{ c: Channel; onChanged: () => void; onSelect: () =>
           <div className="text-xs text-slate-400 flex items-center gap-2 flex-wrap">
             {c.username && <span className="text-sky-400">@{c.username}</span>}
             <span className="flex items-center gap-1"><Users className="w-3 h-3" /> {c.memberCount.toLocaleString()}</span>
-            <span className={c.autopilot.enabled ? 'text-emerald-400' : 'text-slate-500'}>🤖 {c.autopilot.enabled ? `avtopilot: ${c.autopilot.times.join(', ')}` : "avtopilot o'chiq"}</span>
+            <span className={c.autopilot.enabled ? 'text-emerald-400' : 'text-slate-500'}>🤖 {c.autopilot.enabled ? `avtopilot: ${autopilotTimes(c.autopilot).join(', ')}` : "avtopilot o'chiq"}</span>
           </div>
         </button>
         <button onClick={() => setOpen(!open)} className="p-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 flex items-center gap-1 text-xs">
@@ -128,13 +162,35 @@ const ChannelCard: React.FC<{ c: Channel; onChanged: () => void; onSelect: () =>
               <label className="font-semibold text-slate-300 mb-1.5 block">AI post uzunligi (belgi)</label>
               <input
                 type="number"
-                min={300}
-                max={1000}
-                value={f.maxPostChars ?? 900}
-                onChange={(e) => setF({ ...f, maxPostChars: Math.min(1000, Math.max(300, Number(e.target.value) || 900)) })}
+                min={MIN_CHARS}
+                max={MAX_CHARS}
+                step={100}
+                value={f.maxPostChars ?? 1500}
+                onChange={(e) => setF({ ...f, maxPostChars: Math.min(MAX_CHARS, Math.max(MIN_CHARS, Number(e.target.value) || 1500)) })}
                 className={inputCls}
               />
-              <p className="text-[10px] text-slate-500 mt-1">300–1000. Tavsiya: 800–900. Imzo hisobga olinmaydi.</p>
+              <p className="text-[10px] text-slate-500 mt-1">300–5000. Tavsiya: 1200–2000. 4096 dan uzun post Telegramga bir necha xabar bo'lib yuboriladi. Imzo hisobga olinmaydi.</p>
+            </div>
+            <div>
+              <label className="font-semibold text-slate-300 mb-1.5 block">Emoji</label>
+              <div className="grid grid-cols-3 gap-1.5">
+                {EMOJI_OPTIONS.map((o) => (
+                  <button key={o.id} type="button" title={o.hint} onClick={() => setF({ ...f, emojiMode: o.id })} className={`py-2.5 rounded-xl border font-semibold ${(f.emojiMode ?? 'minimal') === o.id ? 'bg-sky-500/20 border-sky-400 text-sky-300' : 'bg-slate-800 border-slate-700 text-slate-400'}`}>{o.label}</button>
+                ))}
+              </div>
+              <p className="text-[10px] text-slate-500 mt-1">Imzodagi emoji o'zgarmaydi.</p>
+            </div>
+          </div>
+
+          <div className="space-y-3">
+            <button type="button" onClick={applyPreset} className="px-3 py-2 rounded-xl bg-fuchsia-500/10 text-fuchsia-300 border border-fuchsia-500/30 hover:bg-fuchsia-500/20">✨ «Rivojlanish Zonasi» andozasini qo'llash</button>
+            <div>
+              <label className="font-semibold text-slate-300 mb-1.5 block">Uslub namunasi <span className="text-slate-500 font-normal">(ixtiyoriy)</span></label>
+              <textarea value={f.styleSample ?? ''} onChange={(e) => setF({ ...f, styleSample: e.target.value })} rows={5} maxLength={3500} placeholder="O'zingiz yoqtirgan post matnini shu yerga qo'ying: AI ritm, tuzilma va sifatni shundan oladi. Bo'sh qoldirsangiz, standart namuna ishlatiladi." className={`${inputCls} resize-none`} />
+            </div>
+            <div>
+              <label className="font-semibold text-slate-300 mb-1.5 block">Ishlatilmasin (har qatorda bittadan) <span className="text-slate-500 font-normal">(ixtiyoriy)</span></label>
+              <textarea value={bannedText} onChange={(e) => setBannedText(e.target.value)} rows={2} placeholder={"Masalan:\nxulosa qilib aytganda\nbebaho"} className={`${inputCls} resize-none`} />
             </div>
           </div>
 
@@ -147,33 +203,68 @@ const ChannelCard: React.FC<{ c: Channel; onChanged: () => void; onSelect: () =>
               <Toggle checked={ap.enabled} onChange={(v) => setAp({ enabled: v })} label="Avtopilot" />
             </div>
 
-            <div>
-              <label className="font-semibold text-slate-300 mb-1.5 block">Kunlik vaqtlar ({f.timezone})</label>
-              <div className="flex flex-wrap gap-1.5 mb-2">
-                {ap.times.map((t) => (
-                  <button key={t} onClick={() => setAp({ times: ap.times.filter((x) => x !== t) })} className="px-2.5 py-1 rounded-lg bg-slate-800 text-slate-200 border border-slate-700 hover:border-red-500/50 hover:text-red-300">{t} ✕</button>
-                ))}
-                {ap.times.length === 0 && <span className="text-slate-500">Vaqt qo'shilmagan</span>}
+            <div className="space-y-2.5">
+              <div>
+                <label className="font-semibold text-slate-300 block">Jadval: qachon, qaysi mavzu, qanday post ({f.timezone})</label>
+                <p className="text-slate-500 mt-0.5">Har bir qator alohida post. Mavzuni bo'sh qoldirsangiz, AI kanal yo'nalishiga qarab o'zi tanlaydi. Bir nechta qator yozsangiz, mavzular navbatma-navbat ishlatiladi.</p>
               </div>
+
+              {slots.length === 0 && <div className="p-3 rounded-xl border border-dashed border-slate-700 text-slate-500">Hozircha jadval bo'sh. Pastdagi «Slot qo'shish» tugmasini bosing.</div>}
+
+              {slots.map((sl) => (
+                <div key={sl.id} className="p-3 rounded-xl bg-slate-950/50 border border-slate-700/70 space-y-2.5">
+                  <div className="flex items-center gap-2">
+                    <input type="time" value={sl.time} onChange={(e) => e.target.value && patchSlot(sl.id, { time: e.target.value })} className={`${inputCls} !w-28 !py-2`} />
+                    <select value={sl.templateType} onChange={(e) => patchSlot(sl.id, { templateType: e.target.value })} className={`${inputCls} !py-2 flex-1 min-w-0`}>
+                      <option value="">Post turi: aylanma</option>
+                      {TEMPLATES.map((t) => <option key={t.id} value={t.id}>{t.icon} {t.title}</option>)}
+                    </select>
+                    <button type="button" onClick={() => setSlots(slots.filter((x) => x.id !== sl.id))} className="p-2 rounded-lg bg-red-500/10 text-red-400 border border-red-500/20 shrink-0" aria-label="Slotni o'chirish"><Trash2 className="w-3.5 h-3.5" /></button>
+                  </div>
+
+                  <div className="flex flex-wrap items-center gap-1">
+                    {WEEKDAY_LABELS.map((d, i) => (
+                      <button key={d} type="button" onClick={() => toggleDay(sl.id, i)} className={`w-8 h-7 rounded-lg border text-[11px] font-semibold ${sl.weekdays.includes(i) ? 'bg-sky-500/20 border-sky-400 text-sky-300' : 'bg-slate-800 border-slate-700 text-slate-500'}`}>{d}</button>
+                    ))}
+                    <span className="text-[10px] text-slate-500 ml-1">{sl.weekdays.length ? '' : 'har kuni'}</span>
+                  </div>
+
+                  <textarea value={sl.topic} onChange={(e) => patchSlot(sl.id, { topic: e.target.value })} rows={2} placeholder={"Mavzu (bo'sh = AI tanlaydi). Masalan: Intizom va odatlar"} className={`${inputCls} resize-none`} />
+                  <input value={sl.instructions ?? ''} onChange={(e) => patchSlot(sl.id, { instructions: e.target.value })} maxLength={500} placeholder="Qo'shimcha ko'rsatma (ixtiyoriy): masalan, hikoya bilan boshlansin" className={`${inputCls} !py-2`} />
+
+                  <div className="grid grid-cols-3 gap-2">
+                    <select value={sl.emojiMode ?? ''} onChange={(e) => patchSlot(sl.id, { emojiMode: (e.target.value || undefined) as EmojiMode | undefined })} className={`${inputCls} !py-2`}>
+                      <option value="">Emoji: kanal</option>
+                      {EMOJI_OPTIONS.map((o) => <option key={o.id} value={o.id}>{o.label}</option>)}
+                    </select>
+                    <select value={sl.withImage === undefined ? '' : sl.withImage ? '1' : '0'} onChange={(e) => patchSlot(sl.id, { withImage: e.target.value === '' ? undefined : e.target.value === '1' })} className={`${inputCls} !py-2`}>
+                      <option value="">Rasm: umumiy</option>
+                      <option value="1">Rasm bilan</option>
+                      <option value="0">Rasmsiz</option>
+                    </select>
+                    <input type="number" min={MIN_CHARS} max={MAX_CHARS} step={100} value={sl.maxChars ?? ''} onChange={(e) => patchSlot(sl.id, { maxChars: e.target.value ? Math.min(MAX_CHARS, Math.max(MIN_CHARS, Number(e.target.value))) : undefined })} placeholder={`Belgi: ${f.maxPostChars ?? 1500}`} className={`${inputCls} !py-2`} />
+                  </div>
+                </div>
+              ))}
+
               <div className="flex gap-2">
                 <input type="time" value={newTime} onChange={(e) => setNewTime(e.target.value)} className={`${inputCls} !w-32 !py-2`} />
-                <button onClick={() => newTime && !ap.times.includes(newTime) && setAp({ times: [...ap.times, newTime].sort() })} className="px-3 py-2 rounded-xl bg-sky-500/20 text-sky-300 border border-sky-500/30 flex items-center gap-1"><Plus className="w-3.5 h-3.5" /> Qo'shish</button>
+                <button type="button" onClick={addSlot} className="px-3 py-2 rounded-xl bg-sky-500/20 text-sky-300 border border-sky-500/30 flex items-center gap-1"><Plus className="w-3.5 h-3.5" /> Slot qo'shish</button>
               </div>
             </div>
 
-            <div>
-              <label className="font-semibold text-slate-300 mb-1.5 block">Mavzular (har qatorda bittadan, aylanma)</label>
-              <textarea value={topicsText} onChange={(e) => setTopicsText(e.target.value)} rows={4} placeholder={"Bo'sh qoldirsangiz, AI kanal yo'nalishiga qarab har safar yangi mavzu tanlaydi.\nYoki o'zingiz yozing:\nPython boshlovchilar uchun\nKarerada o'sish sirlari"} className={`${inputCls} resize-none`} />
-            </div>
-
-            <div>
+            <details className="rounded-xl border border-slate-800 p-3">
+              <summary className="cursor-pointer font-semibold text-slate-300">Umumiy aylanma mavzu va turlar (ixtiyoriy)</summary>
+              <p className="text-slate-500 mt-1.5 mb-2">Faqat mavzusi yoki turi bo'sh qoldirilgan slotlar uchun ishlatiladi.</p>
+              <label className="font-semibold text-slate-300 mb-1.5 block">Mavzular (har qatorda bittadan)</label>
+              <textarea value={topicsText} onChange={(e) => setTopicsText(e.target.value)} rows={3} placeholder={"Bo'sh qoldirsangiz, AI kanal yo'nalishiga qarab yangi mavzu tanlaydi."} className={`${inputCls} resize-none mb-3`} />
               <label className="font-semibold text-slate-300 mb-1.5 block">Post turlari (aylanma)</label>
               <div className="flex flex-wrap gap-1.5">
                 {TEMPLATES.map((t) => (
-                  <button key={t.id} onClick={() => toggleTemplate(t.id)} className={`px-2.5 py-1 rounded-lg border ${ap.templates.includes(t.id) ? 'bg-sky-500/20 border-sky-400 text-sky-300' : 'bg-slate-800 border-slate-700 text-slate-400'}`}>{t.icon} {t.title}</button>
+                  <button key={t.id} type="button" onClick={() => toggleTemplate(t.id)} className={`px-2.5 py-1 rounded-lg border ${ap.templates.includes(t.id) ? 'bg-sky-500/20 border-sky-400 text-sky-300' : 'bg-slate-800 border-slate-700 text-slate-400'}`}>{t.icon} {t.title}</button>
                 ))}
               </div>
-            </div>
+            </details>
 
             <div className="space-y-3">
               <label className="flex items-center justify-between gap-3"><span className="text-slate-200">Har postga AI rasm</span><Toggle checked={ap.withImage} onChange={(v) => setAp({ withImage: v })} /></label>

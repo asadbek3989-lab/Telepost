@@ -29,6 +29,7 @@ const parse = <T>(s: string | null | undefined): T | null => {
 
 export const DEFAULT_AUTOPILOT: Autopilot = {
   enabled: false,
+  slots: [],
   times: ['09:00', '14:00', '19:00'],
   weekdays: [], // bo'sh = har kuni
   topics: [],
@@ -47,7 +48,8 @@ export function newChannel(base: Partial<Channel> & { id: string; title: string 
     niche: '',
     audience: '',
     timezone: 'Asia/Tashkent',
-    maxPostChars: 900,
+    maxPostChars: 1500,
+    emojiMode: 'minimal',
     createdAt: new Date().toISOString(),
     ...base,
     autopilot: { ...DEFAULT_AUTOPILOT, ...(base.autopilot || {}) },

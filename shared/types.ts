@@ -1,9 +1,38 @@
 export type PostStatus = 'draft' | 'scheduled' | 'sending' | 'sent' | 'failed';
 export type MediaType = 'none' | 'image' | 'file';
 
+/** Emoji ishlatish darajasi: none = umuman yo'q, minimal = faqat sarlavha va ro'yxat belgilari, rich = ko'proq */
+export type EmojiMode = 'none' | 'minimal' | 'rich';
+export const EMOJI_MODES: readonly EmojiMode[] = ['none', 'minimal', 'rich'];
+
+/**
+ * Avtopilot jadvalidagi bitta slot: admin QAYSI VAQTDA, QAYSI MAVZUDA va QANDAY TURDAGI post chiqishini o'zi belgilaydi.
+ */
+export interface AutopilotSlot {
+  id: string;
+  /** Kanal vaqt zonasidagi "HH:MM" */
+  time: string;
+  /** 0 = Dushanba … 6 = Yakshanba. Bo'sh = har kuni */
+  weekdays: number[];
+  /** Mavzu. Bo'sh = AI o'zi tanlaydi. Bir nechta qator bo'lsa, navbatma-navbat ishlatiladi */
+  topic: string;
+  /** Post turi (TEMPLATE_IDS dan). Bo'sh = umumiy aylanma ro'yxatdan */
+  templateType: string;
+  /** Admin ko'rsatmasi (masalan: "hikoya bilan boshlansin") */
+  instructions?: string;
+  /** Bo'sh = kanal standarti */
+  emojiMode?: EmojiMode;
+  /** Bo'sh = kanal standarti (300–5000) */
+  maxChars?: number;
+  /** Bo'sh = avtopilotning umumiy sozlamasi */
+  withImage?: boolean;
+}
+
 export interface Autopilot {
   enabled: boolean;
-  /** Kanal vaqt zonasidagi "HH:MM" ko'rinishida yuborish vaqtlari */
+  /** Jadval: har bir slot o'z vaqti, mavzusi va turiga ega. Bo'sh bo'lsa eski `times` ishlatiladi. */
+  slots?: AutopilotSlot[];
+  /** Kanal vaqt zonasidagi "HH:MM" ko'rinishida yuborish vaqtlari (slotlardan avtomatik hosil bo'ladi) */
   times: string[];
   /**
    * Haftaning kunlari (0 = Dushanba … 6 = Yakshanba).
@@ -42,9 +71,15 @@ export interface Channel {
   timezone: string;
   /**
    * AI yozadigan postning taxminiy maksimal belgi soni (imzosiz).
-   * Default 900, yuqori chegara 1000.
+   * 300–5000. 4096 dan uzun post Telegramga ikki xabar bo'lib yuboriladi.
    */
   maxPostChars?: number;
+  /** Emoji ishlatish: none | minimal | rich (admin belgilaydi) */
+  emojiMode?: EmojiMode;
+  /** Uslub namunasi: AI shu postning ritmi, tuzilishi va sifatiga o'xshatib yozadi */
+  styleSample?: string;
+  /** AI ishlatmasligi kerak bo'lgan so'z va iboralar */
+  bannedPhrases?: string[];
   autopilot: Autopilot;
   createdAt: string;
   /** Kanalni qo'shgan adminning Telegram ID si */
@@ -90,6 +125,8 @@ export interface Post {
   updatedAt?: string;
   sentAt?: string;
   messageId?: number;
+  /** Uzun post bir necha xabar bo'lib ketganda, keyingi xabarlar ID si */
+  extraMessageIds?: number[];
   link?: string;
   error?: string;
   attempts?: number;
@@ -149,6 +186,18 @@ export interface PlanIdea {
   scheduledFor: string;
 }
 
-export const TEMPLATE_IDS = ['news', 'motivation', 'educational', 'promo', 'poll', 'quote', 'lifestyle', 'custom'] as const;
+export const TEMPLATE_IDS = ['news', 'motivation', 'educational', 'promo', 'poll', 'quote', 'lifestyle', 'story', 'essay', 'myth', 'challenge', 'custom'] as const;
+export const MAX_POST_CHARS = 5000;
+export const MIN_POST_CHARS = 300;
+
+/** Avtopilotdagi samarali jadval: slotlar bo'lsa shular, bo'lmasa eski `times` dan hosil qilinadi */
+export function effectiveSlots(ap: Pick<Autopilot, 'slots' | 'times' | 'weekdays'>): AutopilotSlot[] {
+  if (Array.isArray(ap.slots) && ap.slots.length) return ap.slots;
+  return (ap.times || []).map((time) => ({ id: time, time, weekdays: ap.weekdays || [], topic: '', templateType: '' }));
+}
+
+export function autopilotTimes(ap: Pick<Autopilot, 'slots' | 'times' | 'weekdays'>): string[] {
+  return [...new Set(effectiveSlots(ap).map((s) => s.time))].sort();
+}
 export const TONE_IDS = ["do'stona", 'rasmiy', 'sotuvchi', 'qiziqarli', 'tahliliy'] as const;
 export const LANGUAGE_IDS = ['uz-lat', 'uz-kir', 'ru', 'en'] as const;

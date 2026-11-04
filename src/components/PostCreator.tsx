@@ -1,11 +1,11 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { Bookmark, Calendar, Clock, Dices, FileText, Image as ImageIcon, MessageSquare, Pencil, RefreshCw, Save, Send, Sparkles, Upload, Wand2 } from 'lucide-react';
-import type { Channel, CtaButton, FileData, Post, PostFull } from '../../shared/types';
+import type { Channel, CtaButton, EmojiMode, FileData, Post, PostFull } from '../../shared/types';
 import { plainLength } from '../../shared/telegramHtml';
 import { api, confirmDialog, haptic } from '../lib/api';
 import { compressImage, makeCoverCard, makeThumb } from '../lib/image';
 import { inMinutes, localInputToIso, toLocalInput, tomorrowAt } from '../lib/time';
-import { Card, inputCls, LANGUAGES, Notice, NoticeState, Spinner, TEMPLATES, TONES } from './ui';
+import { Card, EMOJI_OPTIONS, inputCls, LANGUAGES, MAX_CHARS, MIN_CHARS, Notice, NoticeState, Spinner, TEMPLATES, TG_PART, TONES } from './ui';
 import { TelegramPostPreview } from './TelegramPostPreview';
 
 interface Props {
@@ -42,7 +42,9 @@ const REWRITES = [
   { id: 'hook', label: '🎣 Kuchli ilgak' },
   { id: 'shorten', label: '✂️ Qisqartir' },
   { id: 'expand', label: '📖 Kengaytir' },
-  { id: 'emoji', label: '😊 Emoji' },
+  { id: 'emoji', label: '😊 Emoji qo\'sh' },
+  { id: 'noemoji', label: '🚫 Emojisiz' },
+  { id: 'humanize', label: '🧑 Tabiiylashtir' },
   { id: 'fix', label: '✅ Imlo' },
 ];
 
@@ -51,6 +53,9 @@ export const PostCreator: React.FC<Props> = ({ channel, editPost, onClearEdit, o
   const [topic, setTopic] = useState('');
   const [tone, setTone] = useState(channel.tone);
   const [language, setLanguage] = useState(channel.language);
+  const [emojiMode, setEmojiMode] = useState<EmojiMode>(channel.emojiMode ?? 'minimal');
+  const [maxChars, setMaxChars] = useState<number>(channel.maxPostChars ?? 1500);
+  const [instructions, setInstructions] = useState('');
   const [media, setMedia] = useState<MediaChoice>('ai-image');
   const [imagePrompt, setImagePrompt] = useState('');
   const [ratio, setRatio] = useState<'1:1' | '16:9' | '4:3'>('1:1');
@@ -74,6 +79,8 @@ export const PostCreator: React.FC<Props> = ({ channel, editPost, onClearEdit, o
   useEffect(() => {
     setTone(channel.tone);
     setLanguage(channel.language);
+    setEmojiMode(channel.emojiMode ?? 'minimal');
+    setMaxChars(channel.maxPostChars ?? 1500);
     setCtaUrl(channel.username ? `https://t.me/${channel.username}` : '');
   }, [channel.id]);
 
@@ -165,6 +172,9 @@ export const PostCreator: React.FC<Props> = ({ channel, editPost, onClearEdit, o
           wantFile: media === 'ai-file',
           fileRequest: filePrompt || topic,
           includeSignature,
+          emojiMode,
+          maxChars,
+          instructions: instructions.trim() || undefined,
         },
       });
       const d = r.data;
@@ -219,7 +229,7 @@ export const PostCreator: React.FC<Props> = ({ channel, editPost, onClearEdit, o
     if (!draft?.text) return;
     setBusy('rewrite');
     try {
-      const r = await api<{ text: string }>('/ai/rewrite', { body: { text: draft.text, action } });
+      const r = await api<{ text: string }>('/ai/rewrite', { body: { text: draft.text, action, channelId: channel.id } });
       update({ text: r.text });
     } catch (e) {
       fail(e);
@@ -395,6 +405,37 @@ export const PostCreator: React.FC<Props> = ({ channel, editPost, onClearEdit, o
           </Card>
 
           <Card className="space-y-4">
+            <div>
+              <label className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-2 block">Emoji</label>
+              <div className="grid grid-cols-3 gap-2">
+                {EMOJI_OPTIONS.map((o) => (
+                  <button
+                    key={o.id}
+                    type="button"
+                    onClick={() => setEmojiMode(o.id)}
+                    title={o.hint}
+                    className={`py-2 rounded-xl border text-xs font-semibold transition ${emojiMode === o.id ? 'bg-sky-500/20 border-sky-400 text-sky-300' : 'bg-slate-800/40 border-slate-700 text-slate-400 hover:text-slate-200'}`}
+                  >
+                    {o.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+            <div>
+              <div className="flex items-center justify-between mb-2">
+                <label className="text-xs font-bold uppercase tracking-wider text-slate-400">Post uzunligi</label>
+                <span className="text-xs text-sky-300 font-mono">~{maxChars} belgi</span>
+              </div>
+              <input type="range" min={MIN_CHARS} max={MAX_CHARS} step={100} value={maxChars} onChange={(e) => setMaxChars(Number(e.target.value))} className="w-full accent-sky-500" />
+              <p className="text-[11px] text-slate-500 mt-1">{maxChars > TG_PART ? "4096 dan uzun matn Telegramga bir necha xabar bo'lib, paragraf chegarasida bo'linib yuboriladi." : 'Imzo hisobga olinmaydi.'}</p>
+            </div>
+            <div>
+              <label className="text-xs font-bold uppercase tracking-wider text-slate-400 mb-2 block">Qo'shimcha ko'rsatma (ixtiyoriy)</label>
+              <textarea value={instructions} onChange={(e) => setInstructions(e.target.value)} rows={2} maxLength={500} placeholder="Masalan: hikoya bilan boshlansin, 4 ta band bo'lsin" className={`${inputCls} resize-none text-xs`} />
+            </div>
+          </Card>
+
+          <Card className="space-y-4">
             <label className="text-xs font-bold uppercase tracking-wider text-slate-300 flex items-center gap-1.5">
               <ImageIcon className="w-4 h-4 text-sky-400" /> Media
             </label>
@@ -512,7 +553,9 @@ export const PostCreator: React.FC<Props> = ({ channel, editPost, onClearEdit, o
           {draft && (
             <>
               <div className="flex items-center justify-between text-[11px] text-slate-400 px-1">
-                <span className={len > 4096 ? 'text-red-400' : ''}>{len} / 4096 belgi</span>
+                <span className={len > 12000 ? 'text-red-400' : ''}>
+                  {len} belgi{len > TG_PART ? ` · Telegramga ${Math.ceil(len / TG_PART)} ta xabar bo'lib yuboriladi` : ''}
+                </span>
                 {meta?.readingTime && <span>⏱ {meta.readingTime}</span>}
               </div>
               {longWithMedia && <p className="text-[11px] text-amber-300/90 px-1">ℹ️ Matn 1000 belgidan uzun: media va matn Telegramda ikki alohida xabar bo'ladi.</p>}

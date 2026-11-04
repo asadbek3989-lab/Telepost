@@ -1,7 +1,8 @@
-import { isAdminUser } from './auth.js';
+import { isAdminUser, isOwner } from './auth.js';
 import { deliverPost, resolveAppUrl } from './core.js';
 import { deletePost, getPost, getChannel, listChannels, newChannel, saveChannel } from './store.js';
 import { dm, fetchChannelInfo, tg } from './telegram.js';
+import { autopilotTimes } from '../../shared/types.js';
 import { escapeHtml } from '../../shared/telegramHtml.js';
 
 async function onMessage(msg: any) {
@@ -22,13 +23,13 @@ async function onMessage(msg: any) {
   }
 
   if (cmd === '/kanallar') {
-    const channels = await listChannels();
+    const channels = (await listChannels()).filter((c) => isOwner(userId) || c.addedBy === userId);
     if (!channels.length) {
       await dm(userId, "Hozircha kanal ulanmagan. Botni kanalingizga <b>administrator</b> qilib qo'shing — kanal avtomatik ulanadi.");
       return;
     }
     const lines = channels.map(
-      (c) => `📣 <b>${escapeHtml(c.title)}</b>${c.username ? ` (@${c.username})` : ''}\n   👥 ${c.memberCount} • 🤖 Avtopilot: ${c.autopilot.enabled ? `yoqilgan (${c.autopilot.times.join(', ')})` : "o'chiq"}`
+      (c) => `📣 <b>${escapeHtml(c.title)}</b>${c.username ? ` (@${c.username})` : ''}\n   👥 ${c.memberCount} • 🤖 Avtopilot: ${c.autopilot.enabled ? `yoqilgan (${autopilotTimes(c.autopilot).join(', ')})` : "o'chiq"}`
     );
     await dm(userId, lines.join('\n\n'));
     return;

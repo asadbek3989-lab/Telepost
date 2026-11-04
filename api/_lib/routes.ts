@@ -33,11 +33,11 @@ import {
   setQuotaLimit,
   DEFAULT_AUTOPILOT,
 } from './store.js';
-import { assertUserIsChannelAdmin, dm, fetchChannelInfo, getMe, normalizeChatRef, sendPostToChannel, tg } from './telegram.js';
+import { assertUserIsChannelAdmin, dm, dmLong, fetchChannelInfo, getMe, normalizeChatRef, sendPostToChannel, tg } from './telegram.js';
 import { handleUpdate } from './webhook.js';
 import { escapeHtml, plainLength, sanitizeTelegramHtml } from '../../shared/telegramHtml.js';
-import { TEMPLATE_IDS, TONE_IDS, LANGUAGE_IDS } from '../../shared/types.js';
-import type { Autopilot, Channel, Post, SessionInfo, StatsResult } from '../../shared/types.js';
+import { TEMPLATE_IDS, TONE_IDS, LANGUAGE_IDS, EMOJI_MODES, MAX_POST_CHARS, MIN_POST_CHARS, autopilotTimes } from '../../shared/types.js';
+import type { Autopilot, AutopilotSlot, Channel, Post, SessionInfo, StatsResult } from '../../shared/types.js';
 
 interface Ctx {
   req: Req;
@@ -65,6 +65,9 @@ function add(method: string, pattern: string, auth: AuthMode, handler: Handler) 
 
 const MAX_IMAGE_CHARS = 950_000;
 const MAX_FILE_CHARS = 900_000;
+/** Qo'lda tahrirlanadigan post matni chegarasi (uzun post bir necha Telegram xabariga bo'linadi) */
+const MAX_TEXT_CHARS = 12_000;
+const clampChars = (n: number) => Math.min(MAX_POST_CHARS, Math.max(MIN_POST_CHARS, Math.floor(n)));
 
 const str = (v: any, max: number) => String(v ?? '').trim().slice(0, max);
 const isTz = (tz: string) => {
@@ -253,16 +256,46 @@ add('POST', '/channels', 'admin', async ({ body, session }) => {
   return { success: true, channel };
 });
 
+const TIME_RE = /^([01]?\d|2[0-3]):[0-5]\d$/;
+
+function sanitizeSlots(raw: any[]): AutopilotSlot[] {
+  const used = new Set<string>();
+  const out: AutopilotSlot[] = [];
+  for (const r of raw.slice(0, 24)) {
+    const time = String(r?.time ?? '').trim();
+    if (!TIME_RE.test(time)) continue;
+    let id = String(r?.id ?? '').replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 40);
+    if (!id || used.has(id)) id = newId('s');
+    used.add(id);
+    const weekdays = Array.isArray(r?.weekdays)
+      ? [...new Set<number>(r.weekdays.map((d: any) => Number(d)).filter((d: number) => Number.isInteger(d) && d >= 0 && d <= 6))].sort()
+      : [];
+    const templateType = (TEMPLATE_IDS as readonly string[]).includes(r?.templateType) ? String(r.templateType) : '';
+    const slot: AutopilotSlot = { id, time: time.padStart(5, '0'), weekdays, topic: str(r?.topic, 800), templateType };
+    const instructions = str(r?.instructions, 500);
+    if (instructions) slot.instructions = instructions;
+    if ((EMOJI_MODES as readonly string[]).includes(r?.emojiMode)) slot.emojiMode = r.emojiMode;
+    const mc = Number(r?.maxChars);
+    if (Number.isFinite(mc) && mc > 0) slot.maxChars = clampChars(mc);
+    if (typeof r?.withImage === 'boolean') slot.withImage = r.withImage;
+    out.push(slot);
+  }
+  return out.sort((x, y) => x.time.localeCompare(y.time));
+}
+
 function sanitizeAutopilot(input: any, current: Autopilot): Autopilot {
   const a = input || {};
-  const times = Array.isArray(a.times)
-    ? [...new Set<string>(a.times.map((t: any) => String(t)).filter((t: string) => /^([01]?\d|2[0-3]):[0-5]\d$/.test(t)).map((t: string) => t.padStart(5, '0')))].sort().slice(0, 8)
+  const slots = Array.isArray(a.slots) ? sanitizeSlots(a.slots) : current.slots;
+  let times = Array.isArray(a.times)
+    ? [...new Set<string>(a.times.map((t: any) => String(t)).filter((t: string) => TIME_RE.test(t)).map((t: string) => t.padStart(5, '0')))].sort().slice(0, 8)
     : current.times;
+  // Slotlar bo'lsa, vaqtlar ulardan hosil bo'ladi
+  if (slots?.length) times = [...new Set(slots.map((x) => x.time))].sort();
   const weekdays = Array.isArray(a.weekdays)
     ? [...new Set<number>(a.weekdays.map((d: any) => Number(d)).filter((d: number) => d >= 0 && d <= 6))].sort().slice(0, 7)
     : current.weekdays || [];
   const topics = Array.isArray(a.topics) ? a.topics.map((t: any) => str(t, 200)).filter(Boolean).slice(0, 30) : current.topics;
-  const templates = Array.isArray(a.templates) ? a.templates.filter((t: any) => (TEMPLATE_IDS as readonly string[]).includes(t)).slice(0, 8) : current.templates;
+  const templates = Array.isArray(a.templates) ? a.templates.filter((t: any) => (TEMPLATE_IDS as readonly string[]).includes(t)).slice(0, 12) : current.templates;
   let approvalDeadlineHours = current.approvalDeadlineHours ?? 24;
   if (a.approvalDeadlineHours !== undefined) {
     const n = Number(a.approvalDeadlineHours);
@@ -270,6 +303,7 @@ function sanitizeAutopilot(input: any, current: Autopilot): Autopilot {
   }
   return {
     enabled: typeof a.enabled === 'boolean' ? a.enabled : current.enabled,
+    slots,
     times,
     weekdays,
     topics,
@@ -291,7 +325,13 @@ add('PUT', '/channels/:id', 'admin', async ({ params, body, session }) => {
   if (b.maxPostChars !== undefined) {
     const n = Number(b.maxPostChars);
     if (!Number.isFinite(n)) throw new HttpError(400, 'maxPostChars son bo\'lishi kerak');
-    c.maxPostChars = Math.min(1000, Math.max(300, Math.floor(n)));
+    c.maxPostChars = clampChars(n);
+  }
+  if (b.emojiMode !== undefined && (EMOJI_MODES as readonly string[]).includes(b.emojiMode)) c.emojiMode = b.emojiMode;
+  if (b.styleSample !== undefined) c.styleSample = str(b.styleSample, 3500);
+  if (b.bannedPhrases !== undefined) {
+    const list = Array.isArray(b.bannedPhrases) ? b.bannedPhrases : String(b.bannedPhrases).split('\n');
+    c.bannedPhrases = list.map((x: any) => str(x, 80)).filter(Boolean).slice(0, 40);
   }
   if (b.timezone !== undefined) {
     if (!isTz(String(b.timezone))) throw new HttpError(400, "Vaqt zonasi noto'g'ri (masalan Asia/Tashkent)");
@@ -299,9 +339,10 @@ add('PUT', '/channels/:id', 'admin', async ({ params, body, session }) => {
   }
   if (b.autopilot !== undefined) {
     c.autopilot = sanitizeAutopilot(b.autopilot, c.autopilot);
-    if (c.autopilot.enabled && !c.autopilot.times.length) throw new HttpError(400, 'Avtopilot uchun kamida bitta vaqt belgilang');
-    if (c.autopilot.enabled && !c.autopilot.topics.length && !c.niche) {
-      throw new HttpError(400, "Avtopilot uchun kanal yo'nalishini (niche) yozing yoki mavzular ro'yxatini kiriting");
+    if (c.autopilot.enabled && !autopilotTimes(c.autopilot).length) throw new HttpError(400, 'Avtopilot uchun kamida bitta vaqt (slot) belgilang');
+    const slotHasTopic = (c.autopilot.slots || []).some((x) => x.topic.trim());
+    if (c.autopilot.enabled && !c.autopilot.topics.length && !slotHasTopic && !c.niche) {
+      throw new HttpError(400, "Avtopilot uchun kanal yo'nalishini (niche) yozing yoki mavzularni kiriting");
     }
   }
   await saveChannel(c);
@@ -399,7 +440,7 @@ add('POST', '/posts', 'admin', async ({ body, session }) => {
   const text = sanitizeTelegramHtml(String(b.text || ''));
   const mediaType = imageData ? 'image' : fileData ? 'file' : 'none';
   if (!text && mediaType === 'none') throw new HttpError(400, "Post matni bo'sh");
-  if (plainLength(text) > 4096) throw new HttpError(400, 'Matn 4096 belgidan oshmasligi kerak');
+  if (plainLength(text) > MAX_TEXT_CHARS) throw new HttpError(400, `Matn ${MAX_TEXT_CHARS} belgidan oshmasligi kerak`);
 
   const wanted = b.status === 'sent' ? 'sent' : b.status === 'scheduled' ? 'scheduled' : 'draft';
   const post: Post = {
@@ -448,7 +489,7 @@ add('PUT', '/posts/:id', 'admin', async ({ params, body }) => {
   if (b.topic !== undefined) post.topic = str(b.topic, 300) || post.topic;
   if (b.text !== undefined) {
     post.text = sanitizeTelegramHtml(String(b.text));
-    if (plainLength(post.text) > 4096) throw new HttpError(400, 'Matn 4096 belgidan oshmasligi kerak');
+    if (plainLength(post.text) > MAX_TEXT_CHARS) throw new HttpError(400, `Matn ${MAX_TEXT_CHARS} belgidan oshmasligi kerak`);
   }
   if (b.cta !== undefined) post.cta = pickCta(b.cta);
   if (b.templateType !== undefined && (TEMPLATE_IDS as readonly string[]).includes(b.templateType)) post.templateType = b.templateType;
@@ -501,6 +542,14 @@ add('DELETE', '/posts/:id', 'admin', async ({ params, query }) => {
     } catch (e: any) {
       throw new HttpError(502, `Kanaldan o'chirib bo'lmadi: ${e?.message}`);
     }
+    // Uzun post bir necha xabar bo'lgan bo'lsa, qolganlarini ham o'chiramiz
+    for (const mid of post.extraMessageIds || []) {
+      try {
+        await tg('deleteMessage', { chat_id: post.channelId, message_id: mid });
+      } catch {
+        /* allaqachon o'chirilgan bo'lishi mumkin */
+      }
+    }
   }
   await deletePost(params.id);
   return { success: true };
@@ -530,6 +579,7 @@ add('POST', '/posts/:id/duplicate', 'admin', async ({ params }) => {
   delete copy.scheduledFor;
   delete copy.sentAt;
   delete copy.messageId;
+  delete copy.extraMessageIds;
   delete copy.link;
   delete copy.error;
   delete copy.attempts;
@@ -551,7 +601,7 @@ async function checkAiQuota(session: SessionInfo | null) {
 add('POST', '/ai/post', 'admin', async ({ body, session }) => {
   await checkAiQuota(session);
   const b = body || {};
-  let channel = null;
+  let channel: Channel | null = null;
   if (b.channelId) {
     channel = await mustChannel(String(b.channelId), session);
   }
@@ -563,8 +613,9 @@ add('POST', '/ai/post', 'admin', async ({ body, session }) => {
   const maxFromBody = Number(b.maxChars);
   const maxChars =
     Number.isFinite(maxFromBody) && maxFromBody > 0
-      ? maxFromBody
-      : channel?.maxPostChars ?? 900;
+      ? clampChars(maxFromBody)
+      : channel?.maxPostChars ?? 1500;
+  const emojiMode = (EMOJI_MODES as readonly string[]).includes(b.emojiMode) ? b.emojiMode : channel?.emojiMode ?? 'minimal';
   const data = await generatePost({
     topic,
     autoTopic: auto,
@@ -581,6 +632,10 @@ add('POST', '/ai/post', 'admin', async ({ body, session }) => {
     recentTopics: recent,
     useSearch: templateType === 'news',
     maxChars,
+    emojiMode,
+    instructions: str(b.instructions, 500),
+    styleSample: channel?.styleSample,
+    bannedPhrases: channel?.bannedPhrases,
   });
   return { success: true, data };
 });
@@ -602,10 +657,13 @@ add('POST', '/ai/file', 'admin', async ({ body, session }) => {
 });
 
 add('POST', '/ai/rewrite', 'admin', async ({ body, session }) => {
-  await checkAiQuota(session);
+  const action = String(body?.action || '');
+  if (action !== 'noemoji') await checkAiQuota(session); // emoji olib tashlash AI ishlatmaydi
   const text = String(body?.text || '');
   if (!text.trim()) throw new HttpError(400, "Matn bo'sh");
-  return { success: true, text: await rewriteText(text.slice(0, 6000), String(body?.action || '')) };
+  let bannedPhrases: string[] | undefined;
+  if (body?.channelId) bannedPhrases = (await mustChannel(String(body.channelId), session)).bannedPhrases;
+  return { success: true, text: await rewriteText(text.slice(0, MAX_TEXT_CHARS), action, { bannedPhrases }) };
 });
 
 add('POST', '/ai/plan', 'admin', async ({ body, session }) => {
@@ -776,7 +834,7 @@ add('POST', '/preview/send', 'admin', async ({ body, session }) => {
   const text = sanitizeTelegramHtml(String(body?.text || ''));
   if (!text) throw new HttpError(400, 'Matn bo\'sh');
   const title = str(body?.title, 120) || 'Preview';
-  await dm(session.id, `👁 <b>Preview: ${escapeHtml(title)}</b>\n\n${text}`);
+  await dmLong(session.id, `👁 <b>Preview: ${escapeHtml(title)}</b>\n\n${text}`);
   return { success: true };
 });
 

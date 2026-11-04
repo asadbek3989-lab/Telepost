@@ -48,9 +48,13 @@ export const TEMPLATES = [
   { id: 'educational', title: "Ta'lim & Maslahat", icon: '💡', sampleTopic: "Telegram kanalni 0 dan 10 000 obunachiga olib chiqish bo'yicha 5 ta amaliy tavsiya" },
   { id: 'motivation', title: 'Motivatsiya', icon: '🚀', sampleTopic: "Muvaffaqiyatga erishishda intizomning o'rni va odatlarni shakllantirish" },
   { id: 'promo', title: 'Aksiya / Sotuv', icon: '🔥', sampleTopic: "Yangi xizmat uchun cheklangan muddatli taklif e'loni" },
-  { id: 'poll', title: 'Munozara & Savol', icon: '❓', sampleTopic: "Masofadan ishlash yoki ofisda ishlash: qaysi biri samaraliroq?" },
+  { id: 'poll', title: 'Mulohaza & Bahs', icon: '🧭', sampleTopic: "Masofadan ishlash yoki ofisda ishlash: qaysi biri samaraliroq?" },
   { id: 'quote', title: 'Iqtibos & Tahlil', icon: '💬', sampleTopic: "Mashhur tadbirkorning iqtibosi va undan 3 ta saboq" },
   { id: 'lifestyle', title: 'Kunlik / Hayot', icon: '☀️', sampleTopic: '' },
+  { id: 'story', title: 'Ibratli hikoya', icon: '📖', sampleTopic: '' },
+  { id: 'essay', title: 'Chuqur maqola', icon: '🧠', sampleTopic: '' },
+  { id: 'myth', title: 'Xurofot va haqiqat', icon: '🔍', sampleTopic: '' },
+  { id: 'challenge', title: 'Kunlik topshiriq', icon: '✅', sampleTopic: '' },
   { id: 'custom', title: 'Erkin Mavzu', icon: '✍️', sampleTopic: '' },
 ] as const;
 
@@ -68,6 +72,19 @@ export const LANGUAGES = [
   { id: 'ru', label: '🇷🇺 Русский' },
   { id: 'en', label: '🇬🇧 English' },
 ] as const;
+
+export const EMOJI_OPTIONS = [
+  { id: 'none', label: 'Emojisiz', hint: "Hech qanday emoji yo'q" },
+  { id: 'minimal', label: 'Kam emoji', hint: 'Sarlavha va ro\'yxat belgilari' },
+  { id: 'rich', label: "Ko'proq emoji", hint: 'Paragraflarda ham, me\'yorida' },
+] as const;
+
+export const WEEKDAY_LABELS = ['Du', 'Se', 'Ch', 'Pa', 'Ju', 'Sh', 'Ya'] as const;
+
+/** Telegram bitta xabarga 4096 belgi beradi; uzunroq post shu chegarada bir necha xabarga bo'linadi */
+export const TG_PART = 3900;
+export const MIN_CHARS = 300;
+export const MAX_CHARS = 5000;
 
 export const templateLabel = (id: string) => {
   const t = TEMPLATES.find((x) => x.id === id);

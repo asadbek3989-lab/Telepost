@@ -123,3 +123,63 @@ export function htmlToPlain(html: string): string {
 export function plainLength(html: string): number {
   return htmlToPlain(html).length;
 }
+
+/**
+ * Uzun HTML postni Telegram limiti (4096) ga sig'adigan xabarlarga bo'ladi.
+ * Bo'lish joyi: avval paragraf, keyin qator, keyin gap oxiri, keyin bo'shliq.
+ * Ochiq teglar (masalan <blockquote>) har bir bo'lakda yopiladi va keyingisida qayta ochiladi.
+ */
+export function splitForTelegram(html: string, limit = 3900): string[] {
+  const src = html || '';
+  if (plainLength(src) <= limit) return [src];
+
+  type Atom = { raw: string; len: number; tag?: { name: string; closing: boolean } };
+  const atoms: Atom[] = [];
+  const re = /<\/?([a-zA-Z][\w-]*)[^>]*>|&(?:amp|lt|gt|quot|#\d{1,6}|#x[0-9a-fA-F]{1,6});|[\s\S]/gu;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(src))) {
+    const raw = m[0];
+    if (m[1]) atoms.push({ raw, len: 0, tag: { name: m[1].toLowerCase(), closing: raw.startsWith('</') } });
+    else atoms.push({ raw, len: raw.startsWith('&') && raw.length > 1 ? 1 : raw.length });
+  }
+
+  const isText = (a: Atom | undefined, ch: string) => !!a && !a.tag && a.raw === ch;
+  const parts: string[] = [];
+  let stack: { name: string; raw: string }[] = [];
+  let start = 0;
+
+  while (start < atoms.length) {
+    let len = 0;
+    let end = start;
+    while (end < atoms.length && len + atoms[end].len <= limit) len += atoms[end++].len;
+
+    let brk = end;
+    if (end < atoms.length) {
+      const minPos = start + Math.floor((end - start) * 0.5);
+      const find = (test: (i: number) => boolean) => {
+        for (let i = end; i > minPos; i--) if (test(i)) return i;
+        return -1;
+      };
+      let b = find((i) => isText(atoms[i - 1], '\n') && isText(atoms[i - 2], '\n'));
+      if (b < 0) b = find((i) => isText(atoms[i - 1], '\n'));
+      if (b < 0) b = find((i) => isText(atoms[i - 1], ' ') && /[.!?:;»")]/.test(atoms[i - 2]?.raw || ''));
+      if (b < 0) b = find((i) => isText(atoms[i - 1], ' '));
+      if (b > 0) brk = b;
+    }
+
+    const prefix = stack.map((t) => t.raw).join('');
+    for (let i = start; i < brk; i++) {
+      const t = atoms[i].tag;
+      if (!t) continue;
+      if (t.closing) {
+        const idx = stack.map((x) => x.name).lastIndexOf(t.name);
+        if (idx >= 0) stack = stack.slice(0, idx);
+      } else stack.push({ name: t.name, raw: atoms[i].raw });
+    }
+    const suffix = [...stack].reverse().map((t) => `</${t.name}>`).join('');
+    const inner = atoms.slice(start, brk).map((a) => a.raw).join('').trim();
+    if (inner) parts.push(prefix + inner + suffix);
+    start = brk;
+  }
+  return parts.length ? parts : [src];
+}
